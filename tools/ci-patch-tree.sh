@@ -48,9 +48,14 @@ has_py2_api() {
     grep -qE '\.(iteritems|itervalues|iterkeys|has_key)[[:space:]]*\(|\bxrange[[:space:]]*\(|\bbasestring\b|\bunicode[[:space:]]*\(' "$1"
 }
 
+has_py2_shebang() {
+    head -1 "$1" | grep -qE '^#!.*\bpython2\b'
+}
+
 need_fix() {
     py3_ok "$1" || return 0     # 语法都过不了，肯定要修
     has_py2_api "$1" && return 0
+    has_py2_shebang "$1" && return 0
     return 1
 }
 
@@ -60,6 +65,10 @@ py3ify() {
     need_fix "$f" || return 0
 
     echo "  [py2 -> py3] $f"
+
+    # 先改 shebang：`#!/usr/bin/env python2` 在 22.04 上根本找不到解释器
+    sed -i -E '1s|^#!.*python2.*$|#!/usr/bin/env python3|' "$f"
+
     has_2to3 && run_2to3 "$f"
 
     # 2to3 缺失或漏网时的兜底：`except A, B:` -> `except (A, B):`
@@ -98,27 +107,39 @@ PY2_API = re.compile(
 )
 
 bad = []
-for root, _dirs, files in os.walk('build'):
-    for fn in files:
-        if not fn.endswith('.py'):
-            continue
-        p = os.path.join(root, fn)
-        try:
-            with open(p, encoding='utf-8', errors='replace') as fh:
-                src = fh.read()
-        except Exception:
-            continue
+# 参与编译的顶层目录。不做整树遍历：out/ 是产物、prebuilts/ 里是预编译工具，
+# 而动到它们弊大于利。build/ 之外还有 external/ 之类会真的被构建调用
+# —— external/clang/clang-version-inc.py 就是漏在 build/ 外面才又撞了一次。
+ROOTS = ['build', 'external', 'system', 'hardware', 'frameworks', 'vendor', 'device']
+SKIP = {'out', '.git', 'prebuilts'}
 
-        need = PY2_API.search(src) is not None
-        if not need:
+for base in ROOTS:
+    if not os.path.isdir(base):
+        continue
+    for root, dirs, files in os.walk(base):
+        dirs[:] = [d for d in dirs if d not in SKIP]
+        for fn in files:
+            if not fn.endswith('.py'):
+                continue
+            p = os.path.join(root, fn)
             try:
-                ast.parse(src, filename=p)
-            except SyntaxError:
-                need = True
+                with open(p, encoding='utf-8', errors='replace') as fh:
+                    src = fh.read()
             except Exception:
-                pass
-        if need:
-            bad.append(p)
+                continue
+
+            need = PY2_API.search(src) is not None
+            if not need and re.search(r'^#!.*\bpython2\b', src[:200], re.M):
+                need = True
+            if not need:
+                try:
+                    ast.parse(src, filename=p)
+                except SyntaxError:
+                    need = True
+                except Exception:
+                    pass
+            if need:
+                bad.append(p)
 
 with open(sys.argv[1], 'w', encoding='utf-8', newline='\n') as out:
     # 明确 newline='\n'：Windows 版 python 默认写 \r\n，会让每行末尾带上 CR，
@@ -128,7 +149,7 @@ with open(sys.argv[1], 'w', encoding='utf-8', newline='\n') as out:
 PYEOF
 
 total=$(grep -c . "$BAD_LIST" 2>/dev/null || echo 0)
-echo "== build/ 下需要转换的脚本（语法错 + py2 专有 API）: $total 个 =="
+echo "== 全树需要转换的脚本（语法错 / py2 API / python2 shebang）: $total 个 =="
 
 while IFS= read -r f || [ -n "$f" ]; do
     f=${f%$'\r'}                # 去掉可能残留的 CR
