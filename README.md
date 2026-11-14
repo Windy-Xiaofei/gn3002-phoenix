@@ -19,8 +19,9 @@
 | M3 | 显示 / 触摸 / WiFi / 音频 / 相机逐个点亮 | ⬜ 未开始 |
 | M4 | Android 9 试验 | ⬜ 未开始 |
 
-主线内核（Linux 6.x）的尝试已经归档，结论写在 `docs` 里：MT6735 的 PSCI 是坏的，
-没有 UART 可以看日志，只能得到一个单核、无网、不能待机的开发板。不值得。
+主线内核（Linux 6.x）的尝试已经归档，结论写在
+[GIONEE-GN3002-Mainline/docs/mainline-archive.md](https://github.com/Windy-Xiaofei/GIONEE-GN3002-Mainline/blob/main/docs/mainline-archive.md)：
+MT6735 的 PSCI 是坏的，没有 UART 可以看日志，只能得到一个单核、无网、不能待机的开发板。不值得。
 
 ---
 
@@ -118,8 +119,8 @@ fastboot reboot recovery
 刷之前**务必**先在现有 TWRP 或 SP Flash Tool 的 readback 里备份
 `nvram`、`nvdata`、`protect1`、`protect2` —— 这四个分区丢了，IMEI 就没了。
 
-救援手段：SP Flash Tool + `work/stock/` 里的原厂包，走 Download Only 模式，
-只勾 preloader 以外的分区。**永远不要刷 preloader 和 lk**，那是唯一的救砖通道。
+救援手段：SP Flash Tool + 原厂固件包（`gionee-gn3002_SV1.0_5.1_2017.10.11`），
+走 Download Only 模式，只勾 preloader 以外的分区。**永远不要刷 preloader 和 lk**，那是唯一的救砖通道。
 
 ---
 
