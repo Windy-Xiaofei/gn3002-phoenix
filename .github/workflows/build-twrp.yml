@@ -109,11 +109,24 @@ jobs:
         run: |
           bash rom/device/gionee/gbl7356/tools/ci-patch-tree.sh rom
 
+      - name: Setup ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.run_id }}
+          restore-keys: |
+            ccache-
+
       - name: Build recovery
         run: |
           cd rom
           export ALLOW_MISSING_DEPENDENCIES=true
           export LC_ALL=C
+          export USE_CCACHE=1
+          export CCACHE_DIR=$HOME/.ccache
+          export CCACHE_MAXSIZE=3G
+          export CCACHE_COMPRESS=1
+          ccache -z || true
           # 注意：不要设 _JAVA_OPTIONS / JAVA_TOOL_OPTIONS。
           # 它们会往 `java -version` 的 stderr 里插一行 "Picked up ..."，
           # 而 8.1 的 build 系统只读第一行来判断版本，会直接判成版本错误。
@@ -124,6 +137,19 @@ jobs:
           # 先验证那个 2017 年的 prebuilt clang 能起来，别等编到一半才发现缺库
           prebuilts/clang/host/linux-x86/clang-4053586/bin/clang --version | head -2
           mka recoveryimage -j$(nproc --all) 2>&1 | tee ../build.log
+          ccache -s || true
+
+      - name: Inspect ramdisk contents
+        if: always()
+        run: |
+          D=rom/out/target/product/gbl7356
+          [ -d "$D" ] || exit 0
+          echo "=== 镜像与内核 ==="
+          ls -lh "$D"/*.img "$D/kernel" 2>/dev/null || true
+          echo "=== ramdisk 里最大的 30 个文件（未压缩体积）==="
+          gzip -dc "$D/ramdisk-recovery.img" 2>/dev/null \
+            | cpio -itv 2>/dev/null \
+            | sort -k3 -n | tail -30 || true
 
       - name: Upload build log on failure
         if: failure()
