@@ -121,7 +121,10 @@ TW_EXCLUDE_BASH := true           # TWRP 自己用 mksh，bash 只是附带
 TW_EXCLUDE_LPDUMP := true
 TW_EXCLUDE_F2FS := true           # data 是 ext4，用不上 f2fs 格式化
 TW_EXCLUDE_DEFAULT_USB_INIT := true
-TW_INCLUDE_JPEG := false          # 主题资源全是 png，不需要 jpeg 解码器
+# 注意：不要设 TW_INCLUDE_JPEG := false。
+# libminuitwrp 在 Android.mk 里静态依赖 libjpeg，把模块排除掉会让 ninja
+# 直接报 "libjpeg_intermediates/export_includes missing and no known rule"，
+# 连依赖图都建不起来。想省这几百 KB 得改 TWRP 源码，不值。
 
 TW_INCLUDE_CRYPTO := false
 TW_INCLUDE_NTFS_3G := false
