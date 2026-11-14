@@ -64,6 +64,18 @@ jobs:
             libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync \
             schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python-is-python3
 
+          # AOSP 8.1 自带的 prebuilt clang（4053586，2017 年构建）DT_NEEDED 里
+          # 写死了 libncurses.so.5 / libtinfo.so.5，而 jammy 只剩 .so.6，
+          # jammy 源里也没有 libncurses5 这个包了 —— 只能从 focal 的 pool 直接装。
+          # 用 6.2-0ubuntu2.1（glibc 2.31 编的），比同目录下的 6.3 那几版更保险。
+          BASE=http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses
+          cd /tmp
+          curl -sSLO "$BASE/libtinfo5_6.2-0ubuntu2.1_amd64.deb"
+          curl -sSLO "$BASE/libncurses5_6.2-0ubuntu2.1_amd64.deb"
+          sudo dpkg -i libtinfo5_6.2-0ubuntu2.1_amd64.deb libncurses5_6.2-0ubuntu2.1_amd64.deb
+          sudo ldconfig
+          ldconfig -p | grep -E "lib(ncurses|tinfo)\.so\.5"
+
       - name: repo init and sync
         run: |
           mkdir -p ~/bin
@@ -102,6 +114,8 @@ jobs:
           source build/envsetup.sh
           lunch omni_gbl7356-eng
           java -version 2>&1 | head -2
+          # 先验证那个 2017 年的 prebuilt clang 能起来，别等编到一半才发现缺库
+          prebuilts/clang/host/linux-x86/clang-4053586/bin/clang --version | head -2
           mka recoveryimage -j$(nproc --all) 2>&1 | tee ../build.log
 
       - name: Upload build log on failure
