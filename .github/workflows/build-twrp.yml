@@ -44,6 +44,18 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y temurin-8-jdk
 
+          # runner 预装的是 Java 11，必须把它从 PATH 前面顶掉。
+          # Android 8.1 的 build 系统会读 `java -version` 的第一行做版本判断，
+          # 所以这里既设 JAVA_HOME 也改 alternatives，双保险。
+          JH=$(ls -d /usr/lib/jvm/temurin-8-jdk-* 2>/dev/null | head -1)
+          echo "Java 8 安装路径: $JH"
+          echo "JAVA_HOME=$JH" >> $GITHUB_ENV
+          echo "$JH/bin" >> $GITHUB_PATH
+          sudo update-alternatives --set java  "$JH/bin/java"  2>/dev/null || true
+          sudo update-alternatives --set javac "$JH/bin/javac" 2>/dev/null || true
+          sudo update-alternatives --set jar   "$JH/bin/jar"   2>/dev/null || true
+          "$JH/bin/java" -version
+
       - name: Install build dependencies
         run: |
           sudo apt-get install -y --no-install-recommends \
@@ -81,13 +93,25 @@ jobs:
       - name: Build recovery
         run: |
           cd rom
-          export JAVA_HOME=$(dirname $(dirname $(readlink -f $(which javac))))
           export ALLOW_MISSING_DEPENDENCIES=true
           export LC_ALL=C
-          export _JAVA_OPTIONS="-Xmx6g"
+          # 注意：不要设 _JAVA_OPTIONS / JAVA_TOOL_OPTIONS。
+          # 它们会往 `java -version` 的 stderr 里插一行 "Picked up ..."，
+          # 而 8.1 的 build 系统只读第一行来判断版本，会直接判成版本错误。
+          set -o pipefail
           source build/envsetup.sh
           lunch omni_gbl7356-eng
-          mka recoveryimage -j$(nproc --all)
+          java -version 2>&1 | head -2
+          mka recoveryimage -j$(nproc --all) 2>&1 | tee ../build.log
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Collect artifacts
         run: |
