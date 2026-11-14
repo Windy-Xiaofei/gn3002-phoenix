@@ -1,0 +1,29 @@
+# TWRP fstab — Gionee GN3002 (gbl7356 / MT6735)
+#
+# 格式: <mount point> <fstype> <device> [device2] [flags]
+#
+# 设备路径与原厂 /fstab.mt6735 完全一致（MTK 统一走 by-name）。
+# nvram / nvdata / protect_f 存的是 IMEI、基带校准、DRM key，
+# 全部标了 backup=1 —— 刷机前先在 TWRP 里备一份，比什么都重要。
+
+/boot           emmc    /dev/block/platform/mtk-msdc.0/by-name/boot
+/recovery       emmc    /dev/block/platform/mtk-msdc.0/by-name/recovery
+
+/system         ext4    /dev/block/platform/mtk-msdc.0/by-name/system       flags=display="System";backup=1;wipeingui
+/cache          ext4    /dev/block/platform/mtk-msdc.0/by-name/cache        flags=display="Cache";wipeingui
+/data           ext4    /dev/block/platform/mtk-msdc.0/by-name/userdata     flags=display="Data";backup=1;wipeingui
+/metadata       ext4    /dev/block/platform/mtk-msdc.0/by-name/metadata     flags=display="Metadata";backup=1
+
+# 关键数据分区，只读挂载，不做 wipe 选项
+/nvdata         ext4    /dev/block/platform/mtk-msdc.0/by-name/nvdata       flags=display="NV Data";backup=1
+/nvram          emmc    /dev/block/platform/mtk-msdc.0/by-name/nvram        flags=display="NVRAM";backup=1
+/protect_f      ext4    /dev/block/platform/mtk-msdc.0/by-name/protect1     flags=display="Protect F";backup=1
+/protect_s      ext4    /dev/block/platform/mtk-msdc.0/by-name/protect2     flags=display="Protect S";backup=1
+
+# 这张表里没有 misc 分区，MTK 用 para 顶上（bootloader message 存在这里）
+/para           emmc    /dev/block/platform/mtk-msdc.0/by-name/para         flags=display="Para"
+/persistent     emmc    /dev/block/platform/mtk-msdc.0/by-name/frp          flags=display="FRP"
+
+# 外置存储
+/external_sd    vfat    /dev/block/mmcblk1p1    /dev/block/mmcblk1          flags=display="MicroSD";storage;wipeingui;removable
+/usb-otg        vfat    /dev/block/sda1         /dev/block/sda              flags=display="USB OTG";storage;wipeingui;removable

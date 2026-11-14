@@ -1,0 +1,9 @@
+# 换行符统一 LF —— Makefile 里出现 CRLF 会报 "missing separator"，
+# 这个坑在 Android 设备树里踩过太多次了。
+* text=auto eol=lf
+
+*.gz   binary
+*.dtb  binary
+*.img  binary
+*.so   binary
+*.bin  binary

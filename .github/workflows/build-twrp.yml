@@ -1,0 +1,101 @@
+name: TWRP
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - '**/*.mk'
+      - 'twrp.fstab'
+      - 'prebuilt/**'
+      - '.github/workflows/**'
+
+concurrency:
+  group: twrp-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout device tree
+        uses: actions/checkout@v4
+        with:
+          path: dt
+          fetch-depth: 1
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" \
+                      /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+          df -h /
+
+      - name: Install Java 8
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          curl -fsSL https://packages.adoptium.net/artifactory/api/gpg/key/public \
+            | sudo gpg --dearmor -o /etc/apt/keyrings/adoptium.gpg
+          echo "deb [signed-by=/etc/apt/keyrings/adoptium.gpg] https://packages.adoptium.net/artifactory/deb $(lsb_release -cs) main" \
+            | sudo tee /etc/apt/sources.list.d/adoptium.list
+          sudo apt-get update -qq
+          sudo apt-get install -y temurin-8-jdk
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
+            git gnupg gperf imagemagick libelf-dev liblz4-tool libncurses-dev \
+            libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync \
+            schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python-is-python3
+
+      - name: repo init and sync
+        run: |
+          mkdir -p ~/bin
+          curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod +x ~/bin/repo
+          export PATH=~/bin:$PATH
+
+          mkdir -p $GITHUB_WORKSPACE/rom
+          cd $GITHUB_WORKSPACE/rom
+          git config --global user.name "phoenix-ci"
+          git config --global user.email "ci@phoenix.local"
+          repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni.git \
+                    -b twrp-8.1 --depth=1
+          repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags --optimized-fetch
+          df -h /
+
+      - name: Place device tree
+        run: |
+          mkdir -p rom/device/gionee/gbl7356
+          rsync -a --exclude='.git' dt/ rom/device/gionee/gbl7356/
+          ls -la rom/device/gionee/gbl7356/
+
+      - name: Build recovery
+        run: |
+          cd rom
+          export JAVA_HOME=$(dirname $(dirname $(readlink -f $(which javac))))
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export LC_ALL=C
+          export _JAVA_OPTIONS="-Xmx6g"
+          source build/envsetup.sh
+          lunch omni_gbl7356-eng
+          mka recoveryimage -j$(nproc --all)
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p artifacts
+          cp rom/out/target/product/gbl7356/recovery.img artifacts/ 2>/dev/null || true
+          cp rom/out/target/product/gbl7356/recovery.img artifacts/twrp-gbl7356.img 2>/dev/null || true
+          ls -lh artifacts/
+
+      - name: Upload recovery image
+        uses: actions/upload-artifact@v4
+        with:
+          name: twrp-gbl7356
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30

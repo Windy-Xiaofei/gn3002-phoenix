@@ -1,0 +1,12 @@
+*.img
+*.zip
+*.odex
+*.vdex
+*.oat
+*.apk
+out/
+obj/
+*.pyc
+.DS_Store
+Thumbs.db
+/prebuilt/*.tar.gz

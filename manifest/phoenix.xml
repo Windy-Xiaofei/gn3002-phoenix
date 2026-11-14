@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  gn3002-phoenix local manifest
+  放到 .repo/local_manifests/phoenix.xml 后执行 repo sync
+
+  注意 path 不能改：编译系统靠它定位 BoardConfig.mk。
+  name 指向的仓库名可以随便起，repo 只认 path。
+-->
+<manifest>
+
+  <project name="Windy-Xiaofei/gn3002-phoenix"
+           path="device/gionee/gbl7356"
+           remote="github"
+           revision="main" />
+
+</manifest>
