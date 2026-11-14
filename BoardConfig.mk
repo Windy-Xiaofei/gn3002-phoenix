@@ -119,6 +119,9 @@ TW_EXCLUDE_TWRPAPP := true        # 刷完提示安装 TWRP App，1MB
 TW_EXCLUDE_NANO := true
 TW_EXCLUDE_BASH := true           # TWRP 自己用 mksh，bash 只是附带
 TW_EXCLUDE_LPDUMP := true
+TW_EXCLUDE_F2FS := true           # data 是 ext4，用不上 f2fs 格式化
+TW_EXCLUDE_DEFAULT_USB_INIT := true
+TW_INCLUDE_JPEG := false          # 主题资源全是 png，不需要 jpeg 解码器
 
 TW_INCLUDE_CRYPTO := false
 TW_INCLUDE_NTFS_3G := false
