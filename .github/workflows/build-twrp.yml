@@ -74,6 +74,10 @@ jobs:
           rsync -a --exclude='.git' dt/ rom/device/gionee/gbl7356/
           ls -la rom/device/gionee/gbl7356/
 
+      - name: Patch legacy python2 scripts
+        run: |
+          bash rom/device/gionee/gbl7356/tools/ci-patch-tree.sh rom
+
       - name: Build recovery
         run: |
           cd rom
