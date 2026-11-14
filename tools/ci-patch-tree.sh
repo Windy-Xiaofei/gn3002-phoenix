@@ -174,17 +174,25 @@ rm -f "$BAD_LIST"
 #     self._aid_value_to_name[value] = aid.friendly
 # 而 _handle_oem_range 存进 _oem_ranges 的是 int_value。于是
 #     Utils.in_any_range(aid, self._oem_ranges)   # int <= str
-# 在 py2 里合法（不同类型按类型名比较，恒真），py3 直接 TypeError。
+# 在 py2 里合法：不同类型按类型名比较，"int" < "str"，所以
+#     lower(int) <= value(str)  → True
+#     value(str) <= upper(int)  → False
+# 整体恒为 False，这个检查**从来没生效过**。
 #
-# 只在这一处转 int：这是唯一拿该字典的键去和数值区间比较的地方。
+# py3 下直接 TypeError。而如果只把 value 转成 int 让检查真正生效，
+# 8.1 的头文件里真的有 core AID 落在 OEM 保留区间，会抛 ValueError 让编译失败
+# （后续 %u 格式化也会因为 aid 是 str 而炸）。
+#
+# 所以这里复刻 py2 的行为：非整数值直接不参与比较，等价于原来恒 False。
+# 这是最忠实的移植，不改变这个检查的语义。
 patch_fs_config() {
     local f
     for f in build/make/tools/fs_config/fs_config_generator.py \
              bionic/libc/fs_config_generator.py; do
         [ -f "$f" ] || continue
-        grep -q 'in_any_range(aid, self\._oem_ranges)' "$f" || continue
-        sed -i 's/in_any_range(aid, self\._oem_ranges)/in_any_range(int(aid, 0), self._oem_ranges)/' "$f"
-        echo "  [py3 语义] $f: AID 键转 int 后再比较"
+        grep -q 'return any(lower <= value <= upper for (lower, upper) in ranges)' "$f" || continue
+        sed -i 's|return any(lower <= value <= upper for (lower, upper) in ranges)|return any(isinstance(value, int) and lower <= value <= upper for (lower, upper) in ranges)|' "$f"
+        echo "  [py3 语义] $f: in_any_range 对非整数值复刻 py2 的恒 False 行为"
         patched=$((patched + 1))
     done
 }
