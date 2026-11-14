@@ -146,10 +146,13 @@ jobs:
           [ -d "$D" ] || exit 0
           echo "=== 镜像与内核 ==="
           ls -lh "$D"/*.img "$D/kernel" 2>/dev/null || true
-          echo "=== ramdisk 里最大的 30 个文件（未压缩体积）==="
+          echo "=== recovery root 各子目录（未压缩）==="
+          du -sh "$D"/recovery/root/* 2>/dev/null | sort -h | tail -15 || true
+          echo "=== ramdisk 里最大的 40 个文件（未压缩字节, size=第5列）==="
           gzip -dc "$D/ramdisk-recovery.img" 2>/dev/null \
             | cpio -itv 2>/dev/null \
-            | sort -k3 -n | tail -30 || true
+            | awk '$5 ~ /^[0-9]+$/ {printf "%10d  %s\n", $5, $9}' \
+            | sort -n | tail -40 || true
 
       - name: Upload build log on failure
         if: failure()
