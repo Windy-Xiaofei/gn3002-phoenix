@@ -113,6 +113,10 @@ bad = []
 ROOTS = ['build', 'external', 'system', 'hardware', 'frameworks', 'vendor', 'device']
 SKIP = {'out', '.git', 'prebuilts'}
 
+# 绝对不能被 2to3 碰的路径：这是预编译的 python3 运行时标准库本身，
+# 动了会把工具链自己搞坏。之前 charmap.py 就被误判进去过。
+EXCLUDE_PREFIX = ('external/python3/prebuilt/',)
+
 for base in ROOTS:
     if not os.path.isdir(base):
         continue
@@ -122,6 +126,9 @@ for base in ROOTS:
             if not fn.endswith('.py'):
                 continue
             p = os.path.join(root, fn)
+            rel = p.replace(os.sep, '/')
+            if any(rel.startswith(x) for x in EXCLUDE_PREFIX):
+                continue
             try:
                 with open(p, encoding='utf-8', errors='replace') as fh:
                     src = fh.read()
@@ -148,7 +155,8 @@ with open(sys.argv[1], 'w', encoding='utf-8', newline='\n') as out:
     out.write('\n'.join(bad) + ('\n' if bad else ''))
 PYEOF
 
-total=$(grep -c . "$BAD_LIST" 2>/dev/null || echo 0)
+total=$(grep -c . "$BAD_LIST" 2>/dev/null | head -1)
+[ -n "$total" ] || total=0
 echo "== 全树需要转换的脚本（语法错 / py2 API / python2 shebang）: $total 个 =="
 
 while IFS= read -r f || [ -n "$f" ]; do
@@ -157,6 +165,31 @@ while IFS= read -r f || [ -n "$f" ]; do
     py3ify "$f"
 done < "$BAD_LIST"
 rm -f "$BAD_LIST"
+
+# ---------------------------------------------------------------------------
+# 3. 语义级修补（2to3 处理不了的类型差异）
+# ---------------------------------------------------------------------------
+#
+# fs_config_generator.py 的 _handle_aid 把正则抓到的 **字符串** value 当字典键：
+#     self._aid_value_to_name[value] = aid.friendly
+# 而 _handle_oem_range 存进 _oem_ranges 的是 int_value。于是
+#     Utils.in_any_range(aid, self._oem_ranges)   # int <= str
+# 在 py2 里合法（不同类型按类型名比较，恒真），py3 直接 TypeError。
+#
+# 只在这一处转 int：这是唯一拿该字典的键去和数值区间比较的地方。
+patch_fs_config() {
+    local f
+    for f in build/make/tools/fs_config/fs_config_generator.py \
+             bionic/libc/fs_config_generator.py; do
+        [ -f "$f" ] || continue
+        grep -q 'in_any_range(aid, self\._oem_ranges)' "$f" || continue
+        sed -i 's/in_any_range(aid, self\._oem_ranges)/in_any_range(int(aid, 0), self._oem_ranges)/' "$f"
+        echo "  [py3 语义] $f: AID 键转 int 后再比较"
+        patched=$((patched + 1))
+    done
+}
+
+patch_fs_config
 
 echo "== 完成：转换 $patched 个文件，失败 $failed 个 =="
 [ "$failed" -eq 0 ] || echo "== 注意：有文件没能自动转换，编译可能会再撞到 ==" >&2
