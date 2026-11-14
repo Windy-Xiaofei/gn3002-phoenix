@@ -106,8 +106,20 @@ TARGET_SCREEN_WIDTH := 720
 
 TW_THEME := portrait_hdpi
 TW_DEVICE_VERSION := gn3002-phoenix
-TW_EXTRA_LANGUAGES := true
 TW_DEFAULT_LANGUAGE := zh_CN
+
+# ---- 体积控制 --------------------------------------------------------------
+# recovery 分区只有 16MB，实测原配置打出来的镜像是 20.7MB，装不进去：
+#   total=21688320  maxsize=17031168
+# 内核（原厂 Image.gz-dtb 6.9MB）动不了，只能压 ramdisk。
+# 下面每一项都是可选的锦上添花，砍掉不影响刷机能力。
+TW_EXTRA_LANGUAGES := false       # 全套语言包，最大的一笔（约 2MB）
+TW_EXCLUDE_TZDATA := true         # 2.5MB；代价是 TWRP 里时间显示 UTC
+TW_EXCLUDE_TWRPAPP := true        # 刷完提示安装 TWRP App，1MB
+TW_EXCLUDE_NANO := true
+TW_EXCLUDE_BASH := true           # TWRP 自己用 mksh，bash 只是附带
+TW_EXCLUDE_LPDUMP := true
+
 TW_INCLUDE_CRYPTO := false
 TW_INCLUDE_NTFS_3G := false
 TW_EXCLUDE_SUPERSU := true
