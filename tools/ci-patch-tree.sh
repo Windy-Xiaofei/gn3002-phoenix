@@ -43,10 +43,21 @@ py3_ok() {
     python3 -c "import ast; ast.parse(open('$1',encoding='utf-8',errors='replace').read())" 2>/dev/null
 }
 
+# 语法合法但用了 py2 专有 API —— ast 查不出来，必须靠模式匹配
+has_py2_api() {
+    grep -qE '\.(iteritems|itervalues|iterkeys|has_key)[[:space:]]*\(|\bxrange[[:space:]]*\(|\bbasestring\b|\bunicode[[:space:]]*\(' "$1"
+}
+
+need_fix() {
+    py3_ok "$1" || return 0     # 语法都过不了，肯定要修
+    has_py2_api "$1" && return 0
+    return 1
+}
+
 py3ify() {
     local f=$1
     [ -f "$f" ] || return 0
-    py3_ok "$f" && return 0
+    need_fix "$f" || return 0
 
     echo "  [py2 -> py3] $f"
     has_2to3 && run_2to3 "$f"
@@ -54,10 +65,10 @@ py3ify() {
     # 2to3 缺失或漏网时的兜底：`except A, B:` -> `except (A, B):`
     sed -i -E 's/^([[:space:]]*)except ([A-Za-z_.]+), ([A-Za-z_.]+):/\1except (\2, \3):/' "$f"
 
-    if py3_ok "$f"; then
+    if py3_ok "$f" && ! has_py2_api "$f"; then
         patched=$((patched + 1))
     else
-        echo "     !! 转换后仍无法解析，需要人工看: $f" >&2
+        echo "     !! 转换后仍有问题，需要人工看: $f" >&2
         failed=$((failed + 1))
     fi
 }
@@ -74,7 +85,17 @@ py3ify vendor/omni/build/tools/roomservice.py
 # ---------------------------------------------------------------------------
 BAD_LIST=$(mktemp)
 python3 - "$BAD_LIST" <<'PYEOF'
-import ast, os, sys
+import ast, os, re, sys
+
+# 语法合法、但在 py3 下会直接 AttributeError / NameError 的 py2 专有 API。
+# 单纯做 ast.parse 是查不出这些的 —— post_process_props.py 就是这么漏掉的：
+#   for key, value in buildprops.iteritems():   # 语法 OK，运行即炸
+PY2_API = re.compile(
+    r'\.(iteritems|itervalues|iterkeys|has_key)\s*\('
+    r'|\bxrange\s*\('
+    r'|\bbasestring\b'
+    r'|\bunicode\s*\('
+)
 
 bad = []
 for root, _dirs, files in os.walk('build'):
@@ -84,20 +105,33 @@ for root, _dirs, files in os.walk('build'):
         p = os.path.join(root, fn)
         try:
             with open(p, encoding='utf-8', errors='replace') as fh:
-                ast.parse(fh.read(), filename=p)
-        except SyntaxError:
-            bad.append(p)
+                src = fh.read()
         except Exception:
-            pass
+            continue
 
-with open(sys.argv[1], 'w', encoding='utf-8') as out:
-    out.write('\n'.join(bad))
+        need = PY2_API.search(src) is not None
+        if not need:
+            try:
+                ast.parse(src, filename=p)
+            except SyntaxError:
+                need = True
+            except Exception:
+                pass
+        if need:
+            bad.append(p)
+
+with open(sys.argv[1], 'w', encoding='utf-8', newline='\n') as out:
+    # 明确 newline='\n'：Windows 版 python 默认写 \r\n，会让每行末尾带上 CR，
+    # bash 侧 `[ -f "path\r" ]` 直接判定文件不存在，整个修补静默失效。
+    # 末尾也必须带换行 —— `while read` 遇到没有结尾换行的末行会返回非 0。
+    out.write('\n'.join(bad) + ('\n' if bad else ''))
 PYEOF
 
 total=$(grep -c . "$BAD_LIST" 2>/dev/null || echo 0)
-echo "== build/ 下 py3 解析失败的脚本: $total 个 =="
+echo "== build/ 下需要转换的脚本（语法错 + py2 专有 API）: $total 个 =="
 
-while IFS= read -r f; do
+while IFS= read -r f || [ -n "$f" ]; do
+    f=${f%$'\r'}                # 去掉可能残留的 CR
     [ -n "$f" ] || continue
     py3ify "$f"
 done < "$BAD_LIST"
