@@ -135,7 +135,31 @@ mka recoveryimage
 
 ## 刷入
 
-### 方式一：fastboot flash（推荐，不需要 root）
+**实测结论（2026-11-15）**：`fastboot flash recovery` 返回 `OKAY`，但进 recovery
+仍是原厂界面 —— 这台机 LK 的命令行 fastboot 看着成功、实际没落盘（用「搞机助手」
+才能可靠进 fastboot / recovery）。**改用 mtkclient 走 BROM 直写 eMMC**：
+不经过 LK、不需要 root、不需要 USB 调试授权。
+
+### 方式一：mtkclient（推荐）
+
+工具已装好：`mtkclient/`（独立 venv + `libusb-1.0.dll`），
+驱动包 `tools/UsbDk_1.0.22_x64.msi`。双击 `mtk-shell.bat` 进已配好环境的命令行：
+
+```bat
+python mtk.py printgpt
+python mtk.py r nvram,nvdata,protect1,protect2 nvram.img,nvdata.img,protect1.img,protect2.img
+python mtk.py w recovery "D:\GIONEE-GN3002\twrp-gbl7356.img"
+```
+
+BROM 进法：手机**完全关机**，按住音量上（或音量下）不放再插 USB。
+卡住时加 `--preloader D:\GIONEE-GN3002\work\stock\preloader_gionee6735_66t_l1.bin`，
+或换 `--stock` 走 MTK 原生 DA。Windows 侧若识别不到 `0E8D:0003`，
+用 Zadig 把该设备驱动换成 WinUSB。
+
+**只写 recovery，绝不写 preloader / lk / seccfg / pgpt。**
+`flash-twrp.bat` 是带确认的一键脚本，写死的也只有 recovery。
+
+### 方式二：fastboot flash（本次实测未生效，仅作记录）
 
 关机后按物理键组合进 fastboot（这台机 `adb reboot recovery` 不可靠，
 `adb reboot bootloader` 又需要 USB 调试授权）。进去后：
@@ -146,20 +170,23 @@ fastboot getvar unlocked                # 应为 yes
 fastboot flash recovery twrp-gbl7356.img
 ```
 
-实测成功（2026-11-15）：
+命令返回（2026-11-15）：
 
 ```
 Sending 'recovery' (15178 KB)   OKAY [  1.452s]
 Writing  'recovery'             OKAY [  0.354s]
 ```
 
-> 之前记录的「LK 误报低电量导致 fastboot 不能用」只发生在 **`fastboot boot`**
-> （把镜像加载到内存里启动，走 download 路径，会报
-> `low power, need battery charging`，即使电池 98%）。
-> **`fastboot flash` 不受影响**，且 `getvar all` 能正常返回。
-> bootloader 已解锁（`unlocked: yes` / `secure: no`），所以也不需要 root。
+但随后进 recovery **仍是原厂界面**，说明 LK 回的 OKAY 不等于真的写进 eMMC。
+不确定是 LK 的 flash 实现有缓存/校验回退，还是进 recovery 的路径另有玄机；
+总之**不要信任这条路的返回值**，写完后必须回读校验。
 
-### 方式二：adb + dd（需要 root）
+> 「LK 误报低电量」那条记录只发生在 **`fastboot boot`**（内存启动走 download
+> 路径，报 `low power, need battery charging`，即使电池 98%）。
+> `fastboot flash` 不报低电量、`getvar all` 也正常，bootloader 已解锁
+> （`unlocked: yes` / `secure: no`）—— 但依然没生效。
+
+### 方式三：adb + dd（需要 root）
 
 原厂 5.1 默认没 root，所以这条路在刚刷完原厂包时**用不了**。
 但在 TWRP 里 adbd 本身就是 root，或者系统已 root 时可用：
