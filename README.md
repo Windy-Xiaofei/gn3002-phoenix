@@ -14,7 +14,7 @@
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | M0 | 固件解剖、硬件档案、分区表 | ✅ 完成 |
-| M1 | TWRP 可启动、能挂载全部分区 | 🚧 进行中 |
+| M1 | TWRP 可启动、能挂载全部分区 | 🟡 CI 已产出镜像（15.5MB，装得进 16MB 分区），**待真机验证** |
 | M2 | LineageOS 15.1 首次开机（哪怕只有黑屏 + adb） | ⬜ 未开始 |
 | M3 | 显示 / 触摸 / WiFi / 音频 / 相机逐个点亮 | ⬜ 未开始 |
 | M4 | Android 9 试验 | ⬜ 未开始 |
@@ -51,6 +51,31 @@ cmdline       bootopt=64S3,32N2,64N2
 > `0x80000` 这个 offset 是整件事最容易翻车的地方。Android 默认给 `0x8000`，
 > 而 MT6735 前面 512KB 被 LK 和 ATF 占了。写错的表现是：刷完开机黑屏、几秒后自己复位、
 > 没有任何日志。别问怎么知道的。
+
+---
+
+## 下载
+
+首个可刷镜像：**[twrp-0.1](https://github.com/Windy-Xiaofei/gn3002-phoenix/releases/tag/twrp-0.1)**
+
+```
+twrp-gbl7356.img   15,542,272 B
+sha256  c6651b382b0dbc12a44d2b3a69c3c46c45655b66621465268b35d2a8e0a8e68d
+```
+
+CI（[Actions](https://github.com/Windy-Xiaofei/gn3002-phoenix/actions)）每次推送 `.mk` / workflow 会自动构建，
+产物在 Artifacts（保留 30 天），发版时同步传到 Releases（长期保留）。
+
+镜像 header 已用脚本校验，与原厂 boot.img 实测值完全一致：
+
+```
+kernel_addr 0x40080000   ramdisk_addr 0x44000000
+tags_addr   0x4e000000   page_size 2048
+```
+
+> 内核用的是原厂 `Image.gz-dtb`，**一个字节都没改**。为了压进 16MB 分区，
+> 只裁掉了 TWRP 的可选组件（python3 及标准库、bash、tzdata、多语言包等），
+> 刷机、备份、挂载、adb、MTP 能力都在。
 
 ---
 
@@ -110,14 +135,35 @@ mka recoveryimage
 
 ## 刷入
 
+⚠️ **这台机器的 `fastboot flash` 用不了**：LK 的电量计误报低电量
+（`low power, need battery charging`，实际电池 98%），download 路径直接拒绝。
+**用 adb + dd 直接写 recovery 分区**：
+
 ```bash
-adb reboot bootloader          # 或者关机后按住音量下 + 电源
-fastboot flash recovery recovery.img
-fastboot reboot recovery
+adb start-server
+adb devices                      # 确认设备在线且已 root（原厂 5.1 需先 root）
+adb push twrp-gbl7356.img /sdcard/twrp.img
+
+adb shell 'dd if=/sdcard/twrp.img of=/dev/block/platform/mtk-msdc.0/by-name/recovery bs=1048576'
+adb shell 'sync'
+# 校验写入内容与源文件一致
+adb shell 'md5sum /dev/block/platform/mtk-msdc.0/by-name/recovery'
 ```
 
+`by-name/recovery` 对应 `mmcblk0p8`（16MB），`by-name/boot` 是 `mmcblk0p7`。
+**写错分区就会变砖**，dd 之前先用 `adb shell ls -l /dev/block/platform/mtk-msdc.0/by-name/` 确认。
+
+进 recovery 用物理键组合（这台机 `adb reboot recovery` 不可靠），
+具体组合见主线仓库的 `docs/FLASH.md`。
+
 刷之前**务必**先在现有 TWRP 或 SP Flash Tool 的 readback 里备份
-`nvram`、`nvdata`、`protect1`、`protect2` —— 这四个分区丢了，IMEI 就没了。
+`nvram`、`nvdata`、`protect1`、`protect2` —— 这四个分区丢了，IMEI 就没了：
+
+```bash
+adb shell 'dd if=/dev/block/platform/mtk-msdc.0/by-name/nvram of=/sdcard/nvram.img'
+adb shell 'dd if=/dev/block/platform/mtk-msdc.0/by-name/nvdata of=/sdcard/nvdata.img'
+adb pull /sdcard/nvram.img /sdcard/nvdata.img ./
+```
 
 救援手段：SP Flash Tool + 原厂固件包（`gionee-gn3002_SV1.0_5.1_2017.10.11`），
 走 Download Only 模式，只勾 preloader 以外的分区。**永远不要刷 preloader 和 lk**，那是唯一的救砖通道。
