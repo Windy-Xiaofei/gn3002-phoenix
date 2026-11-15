@@ -212,6 +212,42 @@ adb shell 'sync; md5sum /dev/block/platform/mtk-msdc.0/by-name/recovery'
 **写错分区就会变砖**，dd 之前先用
 `adb shell ls -l /dev/block/platform/mtk-msdc.0/by-name/` 确认。
 
+### 刷完必做：禁用原厂 recovery 自恢复
+
+**这是「刷成功、重启又变回原厂」的真正原因。** 原厂 `init.rc` 里有：
+
+```
+service flash_recovery /system/bin/install-recovery.sh
+    class main
+    oneshot
+```
+
+每次正常开机进 Android 都会跑一次。`install-recovery.sh` 先用
+`applypatch -c EMMC:recovery:8953856:dea2c1d0…` 校验分区 SHA1，
+不是原厂就用 `boot` 分区 + `/system/recovery-from-boot.p`（450KB patch）
+把原厂 recovery 重新写回，最后 `applysig` 补签名。
+所以 fastboot / mtkclient 都刷成功了，一进系统就被还原。
+
+正确顺序：
+
+1. 用 mtkclient 刷完 TWRP 后**不要进系统**，直接按物理键进 recovery
+   （mtkclient 写完会 reset，刷完瞬间就按住进 recovery 的组合键）。
+2. 确认 TWRP 起来后，挂载 System，把这两个文件改名（可恢复）：
+
+```bash
+adb shell id                       # TWRP 里 adbd 是 uid=0
+adb shell mount /system
+adb shell mv /system/bin/install-recovery.sh /system/bin/install-recovery.sh.bak
+adb shell mv /system/recovery-from-boot.p /system/recovery-from-boot.p.bak
+adb shell sync
+```
+
+Windows 下可直接双击 `disable-recovery-restore.bat`（会自动等 adb、
+改名后列出结果）。之后正常重启进 Android 也不会再被还原。
+
+> 如果刷完**不进系统、直接进 recovery 仍是原厂界面**，那就不是这个机制，
+> 需要另查 LK 的 `applysig` 签名校验是否拦了未签名 recovery。
+
 ### 备份 IMEI 分区
 
 刷 recovery 不会动到这几个分区，但**开始刷 system 之前务必**备份
