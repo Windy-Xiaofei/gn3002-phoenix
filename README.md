@@ -135,35 +135,60 @@ mka recoveryimage
 
 ## 刷入
 
-⚠️ **这台机器的 `fastboot flash` 用不了**：LK 的电量计误报低电量
-（`low power, need battery charging`，实际电池 98%），download 路径直接拒绝。
-**用 adb + dd 直接写 recovery 分区**：
+### 方式一：fastboot flash（推荐，不需要 root）
+
+关机后按物理键组合进 fastboot（这台机 `adb reboot recovery` 不可靠，
+`adb reboot bootloader` 又需要 USB 调试授权）。进去后：
+
+```bash
+fastboot devices                       # 应看到 BM...  fastboot
+fastboot getvar unlocked                # 应为 yes
+fastboot flash recovery twrp-gbl7356.img
+```
+
+实测成功（2026-11-15）：
+
+```
+Sending 'recovery' (15178 KB)   OKAY [  1.452s]
+Writing  'recovery'             OKAY [  0.354s]
+```
+
+> 之前记录的「LK 误报低电量导致 fastboot 不能用」只发生在 **`fastboot boot`**
+> （把镜像加载到内存里启动，走 download 路径，会报
+> `low power, need battery charging`，即使电池 98%）。
+> **`fastboot flash` 不受影响**，且 `getvar all` 能正常返回。
+> bootloader 已解锁（`unlocked: yes` / `secure: no`），所以也不需要 root。
+
+### 方式二：adb + dd（需要 root）
+
+原厂 5.1 默认没 root，所以这条路在刚刷完原厂包时**用不了**。
+但在 TWRP 里 adbd 本身就是 root，或者系统已 root 时可用：
 
 ```bash
 adb start-server
-adb devices                      # 确认设备在线且已 root（原厂 5.1 需先 root）
+adb devices                      # 确认 online 且 shell 是 uid=0
 adb push twrp-gbl7356.img /sdcard/twrp.img
-
 adb shell 'dd if=/sdcard/twrp.img of=/dev/block/platform/mtk-msdc.0/by-name/recovery bs=1048576'
-adb shell 'sync'
-# 校验写入内容与源文件一致
-adb shell 'md5sum /dev/block/platform/mtk-msdc.0/by-name/recovery'
+adb shell 'sync; md5sum /dev/block/platform/mtk-msdc.0/by-name/recovery'
 ```
 
 `by-name/recovery` 对应 `mmcblk0p8`（16MB），`by-name/boot` 是 `mmcblk0p7`。
-**写错分区就会变砖**，dd 之前先用 `adb shell ls -l /dev/block/platform/mtk-msdc.0/by-name/` 确认。
+**写错分区就会变砖**，dd 之前先用
+`adb shell ls -l /dev/block/platform/mtk-msdc.0/by-name/` 确认。
 
-进 recovery 用物理键组合（这台机 `adb reboot recovery` 不可靠），
-具体组合见主线仓库的 `docs/FLASH.md`。
+### 备份 IMEI 分区
 
-刷之前**务必**先在现有 TWRP 或 SP Flash Tool 的 readback 里备份
-`nvram`、`nvdata`、`protect1`、`protect2` —— 这四个分区丢了，IMEI 就没了：
+刷 recovery 不会动到这几个分区，但**开始刷 system 之前务必**备份
+`nvram`、`nvdata`、`protect1`、`protect2` —— 丢了 IMEI 就没了。
+原厂系统没 root 时读不了块设备，最方便的是刷好 TWRP 后在 TWRP 里做：
 
 ```bash
 adb shell 'dd if=/dev/block/platform/mtk-msdc.0/by-name/nvram of=/sdcard/nvram.img'
 adb shell 'dd if=/dev/block/platform/mtk-msdc.0/by-name/nvdata of=/sdcard/nvdata.img'
 adb pull /sdcard/nvram.img /sdcard/nvdata.img ./
 ```
+
+或者用 SP Flash Tool 的 Readback 功能。
 
 救援手段：SP Flash Tool + 原厂固件包（`gionee-gn3002_SV1.0_5.1_2017.10.11`），
 走 Download Only 模式，只勾 preloader 以外的分区。**永远不要刷 preloader 和 lk**，那是唯一的救砖通道。
