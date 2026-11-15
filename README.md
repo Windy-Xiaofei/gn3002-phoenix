@@ -143,7 +143,16 @@ mka recoveryimage
 ### 方式一：mtkclient（推荐）
 
 工具已装好：`mtkclient/`（独立 venv + `libusb-1.0.dll`），
-驱动包 `tools/UsbDk_1.0.22_x64.msi`。双击 `mtk-shell.bat` 进已配好环境的命令行：
+驱动包 `tools/UsbDk_1.0.22_x64.msi`。
+
+**图形界面（推荐）**：双击 `mtk-gui.bat`（已配好中文界面）。
+在「读取分区」页先把 `nvram/nvdata/protect1/protect2` 读出来备份；
+再到「写入分区」页点「选择输入目录」→ `mtk-write/`
+（里面只有 `recovery.bin`，因此只会勾上 recovery），
+**确认没有勾选其它分区**后点「写入分区」。
+连不上 BROM 时用界面上的「选择 Preloader」指定原厂 preloader。
+
+命令行：双击 `mtk-shell.bat` 进已配好环境的命令行：
 
 ```bat
 python mtk.py printgpt
