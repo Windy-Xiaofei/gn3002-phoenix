@@ -63,10 +63,14 @@ TARGET_SUPPORTS_64_BIT_APPS := true
 # ------------------------------------------------------------------------------
 BOARD_KERNEL_CMDLINE := bootopt=64S3,32N2,64N2
 BOARD_KERNEL_BASE := 0x40000000
-BOARD_KERNEL_OFFSET := 0x00080000
-BOARD_RAMDISK_OFFSET := 0x04000000
-BOARD_TAGS_OFFSET := 0x0E000000
 BOARD_KERNEL_PAGESIZE := 2048
+
+# 重要：TeamWin 的 android_build(android-8.1) 不认 BOARD_KERNEL_OFFSET /
+# BOARD_RAMDISK_OFFSET / BOARD_TAGS_OFFSET（Makefile 里根本没有这些变量），
+# 只认 BOARD_MKBOOTIMG_ARGS。不设这一行，mkbootimg 会用默认 offset
+# （kernel 0x8000 / ramdisk 0x1000000 / tags 0x100），镜像能打包但永远开不了机。
+# 这里全部是相对 base 的偏移，与上面 header 实测一致。
+BOARD_MKBOOTIMG_ARGS := --kernel_offset 0x00080000 --ramdisk_offset 0x04000000 --tags_offset 0x0e000000
 
 # 原厂内核（Linux 3.10.65）Image.gz 后紧跟 DTB，header 的 dt_size 为 0。
 # 直接用整块 Image.gz-dtb 作为预编译内核，不重新打包 DTB。
@@ -89,7 +93,8 @@ BOARD_FLASH_BLOCK_SIZE := 131072
 
 BOARD_HAS_LARGE_FILESYSTEM := true
 TARGET_USERIMAGES_USE_EXT4 := true
-TARGET_USERIMAGES_USE_F2FS := true
+# 注意：不要设 TARGET_USERIMAGES_USE_F2FS。recovery 的 Android.mk 看到它就会
+# 往 ramdisk 塞 mkfs.f2fs + fsck.f2fs（约 1.2MB）。本机 data/system 都是 ext4。
 BOARD_SYSTEMIMAGE_FILE_SYSTEM_TYPE := ext4
 BOARD_CACHEIMAGE_FILE_SYSTEM_TYPE := ext4
 
@@ -119,7 +124,9 @@ TW_EXCLUDE_TWRPAPP := true        # 刷完提示安装 TWRP App，1MB
 TW_EXCLUDE_NANO := true
 TW_EXCLUDE_BASH := true           # TWRP 自己用 mksh，bash 只是附带
 TW_EXCLUDE_LPDUMP := true
-TW_EXCLUDE_F2FS := true           # data 是 ext4，用不上 f2fs 格式化
+TW_EXCLUDE_PYTHON := true         # python3 二进制 3.7MB + 标准库约 2.5MB，
+                                  # 是 ramdisk 里最大的单项（TeamWin 9.0 分支
+                                  # 的 recovery 默认会塞进 python3_twrp）
 TW_EXCLUDE_DEFAULT_USB_INIT := true
 # 注意：不要设 TW_INCLUDE_JPEG := false。
 # libminuitwrp 在 Android.mk 里静态依赖 libjpeg，把模块排除掉会让 ninja

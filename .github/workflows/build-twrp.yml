@@ -136,8 +136,66 @@ jobs:
           java -version 2>&1 | head -2
           # 先验证那个 2017 年的 prebuilt clang 能起来，别等编到一半才发现缺库
           prebuilts/clang/host/linux-x86/clang-4053586/bin/clang --version | head -2
-          mka recoveryimage -j$(nproc --all) 2>&1 | tee ../build.log
+          # 体积检查失败（ramdisk 装不进 16MB 分区）不影响产物生成：
+          # mkbootimg 已经跑完、ramdisk-recovery.img 完好，下一步会瘦身重打包。
+          # 真正的编译错误会在下一步被 ramdisk 缺失检查拦下。
+          mka recoveryimage -j$(nproc --all) 2>&1 | tee ../build.log || true
           ccache -s || true
+
+      - name: Strip and repack recovery image
+        # 保底手段：不管排除开关是否生效，都在产物层面把确定不需要的东西
+        # 从 ramdisk 里拿掉，再用与 build 系统一致的参数重打镜像。
+        # TeamWin recovery 默认塞进来的 python3（二进制 3.7MB + 标准库 2.5MB）
+        # 是 ramdisk 最大单项；bash/tzdata 是实测会漏进来的两个。
+        if: always()
+        run: |
+          cd rom
+          D=out/target/product/gbl7356
+          if [ ! -f "$D/ramdisk-recovery.img" ] || [ ! -f "$D/kernel" ]; then
+            echo "::error::ramdisk-recovery.img 或 kernel 不存在 —— 编译在更早阶段就失败了"
+            exit 1
+          fi
+          echo "=== 瘦身前 ==="
+          ls -l "$D/ramdisk-recovery.img" "$D/kernel"
+
+          rm -rf /tmp/rd && mkdir -p /tmp/rd && cd /tmp/rd
+          gzip -dc "$GITHUB_WORKSPACE/rom/$D/ramdisk-recovery.img" | cpio -idm --quiet
+
+          echo "=== 待移除项的实际体积 ==="
+          du -shc sbin/python3 etc/python sbin/bash sbin/etc/bash \
+                  system/usr/share/zoneinfo/tzdata sbin/mkfs.f2fs sbin/fsck.f2fs \
+                  sbin/nano sbin/etc/nano 2>/dev/null || true
+
+          rm -rf sbin/python3 etc/python sbin/bash sbin/etc/bash \
+                 system/usr/share/zoneinfo/tzdata sbin/mkfs.f2fs sbin/fsck.f2fs \
+                 sbin/nano sbin/etc/nano
+
+          # find+cpio 重打包；-R 0:0 统一属主，--null 防文件名空格
+          find . -print0 | cpio --null -o -H newc --quiet -R 0:0 \
+            | gzip -9 > /tmp/ramdisk-stripped.img
+          echo "=== 瘦身后 ==="
+          ls -l /tmp/ramdisk-stripped.img
+
+          # 与 build/make 完全一致的参数（BOARD_MKBOOTIMG_ARGS 的值也在这里）
+          "$GITHUB_WORKSPACE/rom/out/host/linux-x86/bin/mkbootimg" \
+            --kernel "$GITHUB_WORKSPACE/rom/$D/kernel" \
+            --ramdisk /tmp/ramdisk-stripped.img \
+            --cmdline "bootopt=64S3,32N2,64N2 buildvariant=eng" \
+            --base 0x40000000 --pagesize 2048 \
+            --kernel_offset 0x00080000 --ramdisk_offset 0x04000000 \
+            --tags_offset 0x0e000000 \
+            --os_version 16.1.0 --os_patch_level 2018-11-05 \
+            --output "$GITHUB_WORKSPACE/rom/$D/recovery.img"
+
+          # 与 build 系统相同的尺寸公式：分区 16MB - 2 块预留
+          SIZE=$(stat -c%s "$GITHUB_WORKSPACE/rom/$D/recovery.img")
+          MAX=$((16777216 - 270336))
+          echo "recovery.img = $SIZE bytes, max = $MAX"
+          if [ "$SIZE" -gt "$MAX" ]; then
+            echo "::error::还是太大"
+            exit 1
+          fi
+          echo "OK: 装得下（余量 $((MAX - SIZE)) 字节）"
 
       - name: Inspect ramdisk contents
         if: always()
@@ -146,6 +204,23 @@ jobs:
           [ -d "$D" ] || exit 0
           echo "=== 镜像与内核 ==="
           ls -lh "$D"/*.img "$D/kernel" 2>/dev/null || true
+          echo "=== 最终 recovery.img header 校验 ==="
+          python3 - <<'EOF'
+          import struct
+          try:
+              d = open("rom/out/target/product/gbl7356/recovery.img", "rb").read(1664)
+              assert d[:8] == b"ANDROID!", "bad magic"
+              ks,ka,rs,ra,ss,sa,ta,ps = struct.unpack("<8I", d[8:40])
+              print("kernel  %8d 0x%08x (期望 0x40080000)" % (ks,ka))
+              print("ramdisk %8d 0x%08x (期望 0x44000000)" % (rs,ra))
+              print("tags    %8d 0x%08x (期望 0x4e000000)" % (ss,ta))
+              print("page    %8d (期望 2048)" % ps)
+              print("cmdline:", d[64:576].split(b"\0")[0].decode())
+          except Exception as e:
+              print("header 校验失败:", e)
+          EOF
+          echo "=== 谁把这些文件放进了 ramdisk（排除开关失灵的根因）==="
+          grep -E "bash|python|tzdata|f2fs" "$D/recovery/root/ramdisk-files.txt" 2>/dev/null | head -25 || true
           echo "=== recovery root 各子目录（未压缩）==="
           du -sh "$D"/recovery/root/* 2>/dev/null | sort -h | tail -15 || true
           echo "=== ramdisk 里最大的 40 个文件（未压缩字节, size=第5列）==="
@@ -155,7 +230,7 @@ jobs:
             | sort -n | tail -40 || true
 
       - name: Upload build log on failure
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-log
