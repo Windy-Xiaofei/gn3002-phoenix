@@ -10,3 +10,8 @@ obj/
 .DS_Store
 Thumbs.db
 /prebuilt/*.tar.gz
+
+# 上面那几条是给构建产物用的，别误伤了原厂固件。
+# modem_*.img / fsm_*.img 是基带和 DSP 固件，开机由 ccci/emdlogger 加载，
+# 缺了就没有信号 —— 必须进仓库。
+!blobs/vendor/firmware/*.img
