@@ -66,7 +66,7 @@ jobs:
             bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
             git gnupg gperf imagemagick libelf-dev liblz4-tool libncurses-dev \
             libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync \
-            schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python-is-python3 \
+            schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python2.7 \
             lib32z1-dev lib32ncurses-dev lib32readline-dev
 
           # AOSP 8.1 的 prebuilt clang（4053586）DT_NEEDED 里写死 libncurses.so.5 /
@@ -123,14 +123,35 @@ jobs:
           export CCACHE_MAXSIZE=8G
           export CCACHE_COMPRESS=1
           export ALLOW_MISSING_DEPENDENCIES=true
+
+          # Android 8.1 的构建脚本全是 Python 2 语法（except X, e / print 语句）。
+          # jammy 默认没有 python，python3 顶上就会 SyntaxError。装 python2.7 后
+          # 让 `python` 指向它；/usr/local/bin 在 PATH 里排在 /usr/bin 前面。
+          PY2=$(command -v python2.7 || command -v python2 || true)
+          if [ -z "$PY2" ]; then echo "FATAL: 没有 python2，8.1 编不了"; exit 1; fi
+          sudo ln -sf "$PY2" /usr/local/bin/python
+          echo "python -> $(readlink -f /usr/local/bin/python)"; python --version
+          echo "python3 -> $(command -v python3)"; python3 --version
+
           ccache -z || true
-          set -o pipefail
           source build/envsetup.sh
           lunch lineage_gbl7356-userdebug
           # 先只编 systemimage，不做 otapackage：出问题时报错更聚焦，
           # 也省掉 ~10GB 的中间产物
-          mka systemimage -j$(nproc --all) 2>&1 | tail -200
+          set +e
+          mka systemimage -j$(nproc --all) 2>&1 | tee /tmp/build.log | tail -120
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" != "0" ]; then
+            echo "===== 失败目标清单 ====="
+            grep -n "^FAILED:" /tmp/build.log | head -30 || true
+            echo "===== 首个失败块的上下文 ====="
+            awk '/^FAILED:/{c++} c==1' /tmp/build.log | head -50 || true
+            echo "===== 日志末尾 ====="
+            tail -40 /tmp/build.log
+          fi
           df -h /
+          exit $rc
 
       - name: Package output
         if: always()
