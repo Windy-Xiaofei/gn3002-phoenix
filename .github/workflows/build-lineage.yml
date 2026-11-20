@@ -66,7 +66,7 @@ jobs:
             bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
             git gnupg gperf imagemagick libelf-dev liblz4-tool libncurses-dev \
             libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync \
-            schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python2.7 \
+            schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python2.7 git-lfs \
             lib32z1-dev lib32ncurses-dev lib32readline-dev
 
           # AOSP 8.1 的 prebuilt clang（4053586）DT_NEEDED 里写死 libncurses.so.5 /
@@ -79,6 +79,15 @@ jobs:
           curl -sSLO "http://archive.ubuntu.com/ubuntu/pool/main/m/mpfr4/libmpfr4_3.1.4-1_amd64.deb"
           sudo dpkg -i libmpfr4_3.1.4-1_amd64.deb || true
           sudo ldconfig
+
+          # external/chromium-webview/prebuilt/arm64 这份 APK 在 LineageOS 那边
+          # 是用 Git LFS 存的（.gitattributes: *.apk filter=lfs，文件本身只有
+          # 134 字节的指针）。没有 git-lfs 时 checkout 下来就是那串文本，
+          # 一直混到 80% 才由 signapk 报 "error in opening zip file"。
+          # --skip-repo 把 filter 写进 ~/.gitconfig，后面的 repo sync checkout
+          # 才会真的去 review.lineageos.org 拉对象。
+          git lfs install --skip-repo
+          git lfs version
 
       - name: repo init and sync
         run: |
@@ -105,6 +114,27 @@ jobs:
           echo "--- device tree ---"
           ls -la rom/device/gionee/gbl7356/
           du -sh rom/device/gionee/gbl7356/blobs 2>/dev/null || echo "警告: blobs 缺失"
+
+      # 上一轮在 80% 挂了两个半小时才报错，就因为这个 APK 是 LFS 指针。
+      # 在这里先验一遍，拉不动就立刻停，别再烧一轮。
+      - name: Ensure webview prebuilt
+        run: |
+          WV="$GITHUB_WORKSPACE/rom/external/chromium-webview/prebuilt/arm64/webview.apk"
+          ls -l "$WV" || echo "webview.apk 不存在"
+          SZ=$(stat -c %s "$WV" 2>/dev/null || echo 0)
+          echo "当前大小: $SZ 字节"
+          if [ "$SZ" -lt 1000000 ]; then
+            echo "--- 还是 LFS 指针，手动拉一次 ---"
+            cat "$WV" || true
+            cd "$(dirname "$WV")"
+            git lfs install --local
+            git lfs pull
+            SZ=$(stat -c %s "$WV")
+            echo "拉取后大小: $SZ 字节"
+          fi
+          if [ "$SZ" -lt 1000000 ]; then
+            echo "FATAL: webview.apk 仍是指针"; exit 1
+          fi
 
       - name: Setup ccache
         uses: actions/cache@v4
