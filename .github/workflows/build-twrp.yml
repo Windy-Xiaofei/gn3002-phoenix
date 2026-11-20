@@ -1,14 +1,9 @@
 name: TWRP
 
 on:
+  # 只保留手动触发。TWRP 已经能用了，设备树再改也不该每次都重编一遍
+  # （之前 paths 里挂着 '**/*.mk'，等于每次提交都要烧 8 分钟 runner）。
   workflow_dispatch:
-  push:
-    branches: [ main ]
-    paths:
-      - '**/*.mk'
-      - 'twrp.fstab'
-      - 'prebuilt/**'
-      - '.github/workflows/**'
 
 concurrency:
   group: twrp-${{ github.ref }}

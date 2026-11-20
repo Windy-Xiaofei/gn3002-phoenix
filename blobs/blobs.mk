@@ -1,5 +1,5 @@
 # 由 tools/extract-files.sh 自动生成，请勿手改
-LOCAL_BLOBS := $(LOCAL_PATH)/blobs
+LOCAL_BLOBS := $(DEVICE_ROOT)/blobs
 
 PRODUCT_COPY_FILES += $(LOCAL_BLOBS)/lib/egl/egl.cfg:$(TARGET_COPY_OUT_VENDOR)/lib/egl/egl.cfg
 PRODUCT_COPY_FILES += $(LOCAL_BLOBS)/lib/egl/libGLES_android.so:$(TARGET_COPY_OUT_VENDOR)/lib/egl/libGLES_android.so

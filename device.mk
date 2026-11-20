@@ -11,7 +11,13 @@
 #   configs/          media / audio / thermal 等配置文件
 #
 
-LOCAL_PATH := $(call my-dir)
+# 注意：这里不能用 $(call my-dir)。
+# device.mk 是在 product_config.mk 解析产品时被 inherit-product 拉进来的，
+# 那个阶段 definitions.mk 还没加载，my-dir 是空函数，LOCAL_PATH 会被清成空串，
+# 于是所有 COPY_FILES 的源路径都变成 /blobs/xxx（首轮 CI 就挂在这：
+# ninja: error: '/blobs/lib/hw/local_time.default.so' missing）。
+# 直接写死相对路径，跟 AOSP 树根对齐，最稳。
+DEVICE_ROOT := device/gionee/gbl7356
 
 # ------------------------------------------------------------------------------
 # 构建目标校验：刷错包直接中止
@@ -49,7 +55,7 @@ PRODUCT_PROPERTY_OVERRIDES += \
 # 本机没有独立 vendor 分区（scatter 里不存在 vendor），所以 BOARD_USES_VENDORIMAGE
 # 必须是 false，TARGET_COPY_OUT_VENDOR 指向 system/vendor。
 # ------------------------------------------------------------------------------
-MTK_BLOBS := $(LOCAL_PATH)/blobs
+MTK_BLOBS := $(DEVICE_ROOT)/blobs
 
 # HAL 模块：8.1 仍支持 legacy hw_get_module，直接用 5.1 的 .so
 MTK_HAL_MODULES := \
@@ -109,18 +115,18 @@ $(foreach m,$(MTK_HAL_MODULES_32), \
 #      8.1 自己编的版本和厂商 HAL 的 ABI 对不上，必须用原厂的
 # 清单由 tools/extract-files.sh 生成，见 blobs/proprietary-files.txt
 # ------------------------------------------------------------------------------
-ifneq ($(wildcard $(LOCAL_PATH)/blobs/proprietary-files.txt),)
-include $(LOCAL_PATH)/blobs/blobs.mk
+ifneq ($(wildcard $(DEVICE_ROOT)/blobs/proprietary-files.txt),)
+include $(DEVICE_ROOT)/blobs/blobs.mk
 endif
 
 # ------------------------------------------------------------------------------
 # 配置文件
 # ------------------------------------------------------------------------------
 PRODUCT_COPY_FILES += \
-    $(LOCAL_PATH)/configs/media_codecs.xml:$(TARGET_COPY_OUT_VENDOR)/etc/media_codecs.xml \
-    $(LOCAL_PATH)/configs/audio_policy.conf:$(TARGET_COPY_OUT_VENDOR)/etc/audio_policy.conf \
-    $(LOCAL_PATH)/configs/thermal.conf:$(TARGET_COPY_OUT_VENDOR)/etc/.tp/thermal.conf \
-    $(LOCAL_PATH)/configs/thermal.off.conf:$(TARGET_COPY_OUT_VENDOR)/etc/.tp/thermal.off.conf
+    $(DEVICE_ROOT)/configs/media_codecs.xml:$(TARGET_COPY_OUT_VENDOR)/etc/media_codecs.xml \
+    $(DEVICE_ROOT)/configs/audio_policy.conf:$(TARGET_COPY_OUT_VENDOR)/etc/audio_policy.conf \
+    $(DEVICE_ROOT)/configs/thermal.conf:$(TARGET_COPY_OUT_VENDOR)/etc/.tp/thermal.conf \
+    $(DEVICE_ROOT)/configs/thermal.off.conf:$(TARGET_COPY_OUT_VENDOR)/etc/.tp/thermal.off.conf
 
 # ------------------------------------------------------------------------------
 # init / ueventd
@@ -130,9 +136,9 @@ PRODUCT_COPY_FILES += \
 # 注意那个 hw/ 子目录，少一层就不会被加载，表现为「设备服务一个都没起」。
 # ------------------------------------------------------------------------------
 PRODUCT_COPY_FILES += \
-    $(LOCAL_PATH)/rootdir/init.mt6735.rc:$(TARGET_COPY_OUT_VENDOR)/etc/init/hw/init.mt6735.rc \
-    $(LOCAL_PATH)/rootdir/ueventd.mt6735.rc:$(TARGET_COPY_OUT_VENDOR)/etc/ueventd.rc \
-    $(LOCAL_PATH)/rootdir/fstab.mt6735:$(TARGET_COPY_OUT_VENDOR)/etc/fstab.mt6735
+    $(DEVICE_ROOT)/rootdir/init.mt6735.rc:$(TARGET_COPY_OUT_VENDOR)/etc/init/hw/init.mt6735.rc \
+    $(DEVICE_ROOT)/rootdir/ueventd.mt6735.rc:$(TARGET_COPY_OUT_VENDOR)/etc/ueventd.rc \
+    $(DEVICE_ROOT)/rootdir/fstab.mt6735:$(TARGET_COPY_OUT_VENDOR)/etc/fstab.mt6735
 
 # ------------------------------------------------------------------------------
 # 基础包
