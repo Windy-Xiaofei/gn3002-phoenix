@@ -199,6 +199,59 @@ patch_fs_config() {
 
 patch_fs_config
 
+# ---------------------------------------------------------------------------
+# 4. ramdisk 源头瘦身：在 build 系统的 POST_INSTALL 阶段删除无用组件。
+# ---------------------------------------------------------------------------
+# 关键：绝对不能在产物上解包/重打包 ramdisk —— MTK 3.10 内核不认
+# 重新打包的 cpio（即使内容全是原厂文件也 panic 在 mount_block_root）。
+# 必须让 build 系统自己的 mkbootfs 打包，结构才是内核认的。
+# 这里往 recovery 模块的 LOCAL_POST_INSTALL_CMD 注入 rm，
+# 使其在 mkbootfs 之前生效。
+patch_recovery_ramdisk() {
+    local f="bootable/recovery/Android.mk"
+    [ -f "$f" ] || return 0
+    grep -q 'phoenix ramdisk slim' "$f" && { echo "  [ramdisk] 已 patch，跳过"; return 0; }
+
+    # 必须插在 "include $(BUILD_EXECUTABLE)" 之前 —— 之后的变量不生效
+    python3 - "$f" <<'PYEOF'
+import sys
+f = sys.argv[1]
+src = open(f, encoding='utf-8').read()
+block = r'''
+# ---- phoenix ramdisk slim (injected by ci-patch-tree.sh) ----
+# Must run before mkbootfs packages the ramdisk; do NOT repack afterwards.
+LOCAL_POST_INSTALL_CMD += \
+    rm -rf $(TARGET_RECOVERY_ROOT_OUT)/sbin/python3 \
+           $(TARGET_RECOVERY_ROOT_OUT)/etc/python \
+           $(TARGET_RECOVERY_ROOT_OUT)/sbin/bash \
+           $(TARGET_RECOVERY_ROOT_OUT)/sbin/etc/bash \
+           $(TARGET_RECOVERY_ROOT_OUT)/system/usr/share/zoneinfo/tzdata \
+           $(TARGET_RECOVERY_ROOT_OUT)/sbin/mkfs.f2fs \
+           $(TARGET_RECOVERY_ROOT_OUT)/sbin/fsck.f2fs \
+           $(TARGET_RECOVERY_ROOT_OUT)/sbin/nano \
+           $(TARGET_RECOVERY_ROOT_OUT)/sbin/etc/nano \
+           $(TARGET_RECOVERY_ROOT_OUT)/sbin/charger \
+           $(TARGET_RECOVERY_ROOT_OUT)/sbin/linker \
+           $(TARGET_RECOVERY_ROOT_OUT)/sbin/libncurses.so \
+           $(TARGET_RECOVERY_ROOT_OUT)/twres/languages; \
+    echo "phoenix ramdisk slim: post-install cleanup done"
+
+'''
+marker = 'include $(BUILD_EXECUTABLE)'
+pos = src.find(marker)
+if pos < 0:
+    print('  [ramdisk] WARNING: marker not found')
+    sys.exit(1)
+out = src[:pos] + block + src[pos:]
+open(f, 'w', encoding='utf-8').write(out)
+print('  [ramdisk] 注入 POST_INSTALL 清理到', f)
+PYEOF
+    echo "  [ramdisk] post-install cleanup injected"
+    patched=$((patched + 1))
+}
+
+patch_recovery_ramdisk
+
 echo "== 完成：转换 $patched 个文件，失败 $failed 个 =="
 [ "$failed" -eq 0 ] || echo "== 注意：有文件没能自动转换，编译可能会再撞到 ==" >&2
 
