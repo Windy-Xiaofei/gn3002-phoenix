@@ -2,8 +2,28 @@
 # 这个坑在 Android 设备树里踩过太多次了。
 * text=auto eol=lf
 
+# ------------------------------------------------------------------------------
+# 二进制：一律禁止任何换行转换
+#
+# blobs/vendor/bin 下是无扩展名的 ELF，git 只能靠 NUL 字节猜它是二进制，
+# 在 core.autocrlf=true 的 Windows 上不够保险 —— 一旦被当文本处理，
+# 里面每个 0x0A 都会被塞一个 0x0D，装到机器上就是「可执行文件格式错误」。
+# 这里直接按目录封死。
+# ------------------------------------------------------------------------------
+blobs/**   -text
+prebuilt/** -text
+
 *.gz   binary
 *.dtb  binary
 *.img  binary
 *.so   binary
 *.bin  binary
+*.ttf  binary
+*.apk  binary
+*.jar  binary
+
+# 脚本和配置必须是纯 LF
+*.sh   text eol=lf
+*.mk   text eol=lf
+*.rc   text eol=lf
+*.xml  text eol=lf

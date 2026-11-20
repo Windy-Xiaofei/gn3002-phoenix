@@ -1,0 +1,76 @@
+# Gionee GN3002 (mt6735) — 设备 init 配置
+#
+# 8.1 的 init 在解析完 AOSP 的 /init.rc 之后会 import
+#   /vendor/etc/init/hw/init.${ro.hardware}.rc
+# 也就是本文件（ro.hardware = mt6735）。
+#
+# 这里刻意只放「不阻塞开机」的最小服务集。原厂 init.mt6735.rc 有 1543 行、
+# 几十个服务（modem / wifi / bt / aee / xlog / touch ...），一次性全搬过来
+# 只会在 bring-up 阶段制造噪音：任何一个依赖 5.1 专属节点或二进制的服务
+# 反复重启，都会把真正的启动问题淹掉。
+# 正确的做法是先让 framework 起来，再按 logcat / dmesg 的实际报错逐个加回。
+
+# ------------------------------------------------------------------------------
+# NVRAM
+#
+# MTK 的 MAC 地址、射频校准参数都存在 nvram 分区，由这个守护进程对外提供。
+# WiFi / 蓝牙 / modem 都依赖它，必须先起来。
+# ------------------------------------------------------------------------------
+service nvram_daemon /vendor/bin/nvram_daemon
+    class main
+    user root
+    group system
+    oneshot
+
+# ------------------------------------------------------------------------------
+# 温控
+#
+# MTK 的 thermal_manager 读 /system/etc/.tp/thermal.conf 决定降频策略。
+# 没有它短时间不会死，但长时间跑会真的过热。
+# ------------------------------------------------------------------------------
+service thermal_manager /vendor/bin/thermal_manager
+    class main
+    user root
+    oneshot
+
+# ------------------------------------------------------------------------------
+# 电量计
+#
+# 常驻服务，直接读 PMIC 的库仑计。TWRP 里电量不准就是因为没有它。
+# ------------------------------------------------------------------------------
+service fuelgauged /vendor/bin/fuelgauged
+    class main
+    user system
+    group system
+
+# ------------------------------------------------------------------------------
+# 蓝牙
+#
+# 走 MTK 私有 socket（bt.int.adp / bt.a2dp.stream），class late_start 不阻塞开机。
+# ------------------------------------------------------------------------------
+service mtkbt /vendor/bin/mtkbt
+    class late_start
+    socket bt.int.adp dgram 660 bluetooth net_bt
+    socket bt.a2dp.stream dgram 660 bluetooth net_bt
+    user bluetooth
+    group system vpn net_admin inet net_raw net_bt bluetooth net_bt_admin net_bt_stack sdcard_r
+
+# ------------------------------------------------------------------------------
+# post-fs-data
+#
+# MTK 的守护进程习惯把运行时状态写在 /data 下的固定目录，先建出来。
+# ------------------------------------------------------------------------------
+on post-fs-data
+    mkdir /data/nvram 0771 root root
+    mkdir /data/nvram/APCFG 0771 root root
+    mkdir /data/misc/wifi 0770 wifi wifi
+    mkdir /data/misc/bluetooth 0770 bluetooth bluetooth
+
+# ------------------------------------------------------------------------------
+# 权限
+#
+# 触摸是汇顶 FT8606 / 敦泰，走 input 子系统；PMIC 的充电节点要能被 framework 读。
+# ------------------------------------------------------------------------------
+on boot
+    chown system system /proc/mtk_battery_cmd
+    chmod 0660 /proc/mtk_battery_cmd

@@ -159,3 +159,30 @@ RECOVERY_SDCARD_ON_DATA := true
 # 编译期先不启用设备自己的 policy 目录，等 M2 起系统时再按 denial 逐条补。
 # ------------------------------------------------------------------------------
 # BOARD_SEPOLICY_DIRS += $(DEVICE_PATH)/sepolicy
+
+
+# ==============================================================================
+# LineageOS 15.1 专属配置
+#
+# 这一段只被 lineage_gbl7356 产品读取，对 TWRP（omni_gbl7356）构建无影响：
+# 上面 TWRP 用不到的变量，8.1 的 build 系统会直接忽略。
+# ==============================================================================
+
+# 本机 scatter 里没有 vendor 分区，只能走非 Treble：
+# 厂商内容全部落在 /system/vendor，不生成 vendor.img，也不需要 VNDK。
+BOARD_USES_VENDORIMAGE := false
+BOARD_BUILD_SYSTEM_ROOT_IMAGE := false
+# TARGET_COPY_OUT_VENDOR 已在上面（TWRP 段）声明为 system/vendor，此处不重复赋值。
+
+# 8.1 的 init 从 ramdisk 起，system 挂载后再 switch_root，
+# 所以 ramdisk 里必须有完整的 init + 第一阶段的 rc。
+BOARD_ROOT_EXTRA_FOLDERS := \
+    oemkeystore
+
+# 内核暂用原厂预编译 Image.gz-dtb。
+# TWRP（同为 Android 8.1 用户空间）已经在这颗内核上跑通了，先不动它，
+# 把变量减到最少；等系统能起、确认 sdcardfs / memfd_create 确实是瓶颈，
+# 再切到自编内核（TARGET_KERNEL_SOURCE）。
+# TARGET_KERNEL_SOURCE := kernel/gionee/gbl7356
+# TARGET_KERNEL_CONFIG := gbl7356_defconfig
+TARGET_KERNEL_ARCH := arm64
