@@ -136,97 +136,36 @@ jobs:
           java -version 2>&1 | head -2
           # 先验证那个 2017 年的 prebuilt clang 能起来，别等编到一半才发现缺库
           prebuilts/clang/host/linux-x86/clang-4053586/bin/clang --version | head -2
-          # 体积检查失败（ramdisk 装不进 16MB 分区）不影响产物生成：
-          # mkbootimg 已经跑完、ramdisk-recovery.img 完好，下一步会瘦身重打包。
-          # 真正的编译错误会在下一步被 ramdisk 缺失检查拦下。
-          mka recoveryimage -j$(nproc --all) 2>&1 | tee ../build.log || true
+          # 体积在源头（ci-patch-tree.sh 的 POST_INSTALL 清理）控制好，
+          # mkbootfs 原生打包，绝不在产物上重打包 ramdisk。
+          mka recoveryimage -j$(nproc --all) 2>&1 | tee ../build.log
           ccache -s || true
 
-      - name: Strip and repack recovery image
-        # 保底手段：不管排除开关是否生效，都在产物层面把确定不需要的东西
-        # 从 ramdisk 里拿掉，再用与 build 系统一致的参数重打镜像。
-        # TeamWin recovery 默认塞进来的 python3（二进制 3.7MB + 标准库 2.5MB）
-        # 是 ramdisk 最大单项；bash/tzdata 是实测会漏进来的两个。
+      - name: Verify native recovery image
+        #  IMPORTANT: do NOT unpack/repack the ramdisk here.
+        #  MTK 3.10 kernel refuses to mount a ramdisk repacked with
+        #  GNU cpio ("VFS: Cannot open root device ram" -> panic).
+        #  Slimming is done at source level in ci-patch-tree.sh via
+        #  LOCAL_POST_INSTALL_CMD, so build/make's mkbootfs produces
+        #  a kernel-acceptable ramdisk.
         if: always()
         run: |
           cd rom
           D=out/target/product/gbl7356
-          if [ ! -f "$D/ramdisk-recovery.img" ] || [ ! -f "$D/kernel" ]; then
-            echo "::error::ramdisk-recovery.img 或 kernel 不存在 —— 编译在更早阶段就失败了"
+          if [ ! -f "$D/ramdisk-recovery.img" ] || [ ! -f "$D/kernel" ] || [ ! -f "$D/recovery.img" ]; then
+            echo "::error::native build outputs missing - build failed earlier"
             exit 1
           fi
-          echo "=== 瘦身前 ==="
-          ls -l "$D/ramdisk-recovery.img" "$D/kernel"
-
-          rm -rf /tmp/rd && mkdir -p /tmp/rd && cd /tmp/rd
-          gzip -dc "$GITHUB_WORKSPACE/rom/$D/ramdisk-recovery.img" | cpio -idm --quiet
-
-          echo "=== 待移除项的实际体积 ==="
-          du -shc sbin/python3 etc/python sbin/bash sbin/etc/bash \
-                  system/usr/share/zoneinfo/tzdata sbin/mkfs.f2fs sbin/fsck.f2fs \
-                  sbin/nano sbin/etc/nano twres/languages sbin/charger sbin/linker \
-                  2>/dev/null || true
-
-          # 第一组： python / shell / tzdata / 文件系统工具（确定无用）
-          rm -rf sbin/python3 etc/python sbin/bash sbin/etc/bash \
-                 system/usr/share/zoneinfo/tzdata sbin/mkfs.f2fs sbin/fsck.f2fs \
-                 sbin/nano sbin/etc/nano
-
-          # 第二组：语言包。TWRP 自带的 19 个语言文件全是英文/欧洲语言，
-          # 没有任何中文（TW_DEFAULT_LANGUAGE=zh_CN 从未生效）。
-          # 用户只要中文，删掉全部语言文件后 UI 回退到内置英文字符串。
-          rm -rf twres/languages
-
-          # 第三组：确定无用的二进制（依赖图分析：从所有可执行文件出发不可达）
-          #   charger  = 关机充电动画，recovery 里用不到
-          #   linker   = 32 位动态链接器，TWRP 是 64 位
-          #   libncurses = nano/bash 的依赖，两个都已删
-          #   exfat 工具 = data/system 都是 ext4
-          #   openaes    = TW_INCLUDE_CRYPTO=false，加密备份已关闭
-          rm -rf sbin/charger sbin/linker sbin/libncurses.so \
-                 sbin/mkexfatfs sbin/fsck.exfat sbin/exfat-fuse sbin/libexfat_twrp.so \
-                 sbin/openaes sbin/libopenaes.so \
-                 sbin/libext2_profile.so sbin/libnetd_client.so sbin/libtinyxml2.so \
-                 sbin/me.twrp.twrpapp.apk ramdisk-files.sha256sum
-
-          # 第四组：HIDL / vintf 遗留库（Android 9 分支带进来，
-          # 纯 C++ recovery 在 3.10 内核上不经过 binder/HIDL）。
-          # 这一组是运行时 dlopen 候选，删后有风险；单独列出方便回退。
-          rm -rf sbin/android.hardware.keymaster@3.0.so \
-                 sbin/android.hidl.token@1.0.so \
-                 sbin/libhidl-gen-utils.so sbin/libhidlbase.so \
-                 sbin/libhidltransport.so sbin/libhwbinder.so sbin/libvintf.so
-
-          echo "=== 精简后 ramdisk 内容统计 ==="
-          du -sh . | tail -1
-          du -sh sbin twres 2>/dev/null
-
-          # find+cpio 重打包；-R 0:0 统一属主，--null 防文件名空格
-          find . -print0 | cpio --null -o -H newc --quiet -R 0:0 \
-            | gzip -9 > /tmp/ramdisk-stripped.img
-          echo "=== 瘦身后 ==="
-          ls -l /tmp/ramdisk-stripped.img
-
-          # 与 build/make 完全一致的参数（BOARD_MKBOOTIMG_ARGS 的值也在这里）
-          "$GITHUB_WORKSPACE/rom/out/host/linux-x86/bin/mkbootimg" \
-            --kernel "$GITHUB_WORKSPACE/rom/$D/kernel" \
-            --ramdisk /tmp/ramdisk-stripped.img \
-            --cmdline "bootopt=64S3,32N2,64N2 buildvariant=eng" \
-            --base 0x40000000 --pagesize 2048 \
-            --kernel_offset 0x00080000 --ramdisk_offset 0x04000000 \
-            --tags_offset 0x0e000000 \
-            --os_version 16.1.0 --os_patch_level 2018-11-05 \
-            --output "$GITHUB_WORKSPACE/rom/$D/recovery.img"
-
-          # 与 build 系统相同的尺寸公式：分区 16MB - 2 块预留
-          SIZE=$(stat -c%s "$GITHUB_WORKSPACE/rom/$D/recovery.img")
+          echo "=== native build outputs (mkbootfs-packed, NOT repacked) ==="
+          ls -l "$D/ramdisk-recovery.img" "$D/kernel" "$D/recovery.img"
+          SIZE=$(stat -c%s "$D/recovery.img")
           MAX=$((16777216 - 270336))
           echo "recovery.img = $SIZE bytes, max = $MAX"
           if [ "$SIZE" -gt "$MAX" ]; then
-            echo "::error::还是太大"
+            echo "::error::native recovery.img too large - source-level slimming insufficient"
             exit 1
           fi
-          echo "OK: 装得下（余量 $((MAX - SIZE)) 字节）"
+          echo "OK: native image fits with $((MAX-SIZE)) bytes spare"
 
       - name: Inspect ramdisk contents
         if: always()
