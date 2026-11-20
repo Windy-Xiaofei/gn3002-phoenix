@@ -111,7 +111,10 @@ TARGET_SCREEN_WIDTH := 720
 
 TW_THEME := portrait_hdpi
 TW_DEVICE_VERSION := gn3002-phoenix
-TW_DEFAULT_LANGUAGE := zh_CN
+# TeamWin 分支的 twres/languages/ 里没有 zh_CN.xml（只有 en + 欧洲语言），
+# 设 zh_CN 只会 fallback 到内置英文。CI 的 strip 步骤会删掉整个 languages/，
+# 所以这里明确设 en，避免误导。
+TW_DEFAULT_LANGUAGE := en
 
 # ---- 体积控制 --------------------------------------------------------------
 # recovery 分区只有 16MB，实测原配置打出来的镜像是 20.7MB，装不进去：
