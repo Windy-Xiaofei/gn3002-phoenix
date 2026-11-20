@@ -164,11 +164,42 @@ jobs:
           echo "=== 待移除项的实际体积 ==="
           du -shc sbin/python3 etc/python sbin/bash sbin/etc/bash \
                   system/usr/share/zoneinfo/tzdata sbin/mkfs.f2fs sbin/fsck.f2fs \
-                  sbin/nano sbin/etc/nano 2>/dev/null || true
+                  sbin/nano sbin/etc/nano twres/languages sbin/charger sbin/linker \
+                  2>/dev/null || true
 
+          # 第一组： python / shell / tzdata / 文件系统工具（确定无用）
           rm -rf sbin/python3 etc/python sbin/bash sbin/etc/bash \
                  system/usr/share/zoneinfo/tzdata sbin/mkfs.f2fs sbin/fsck.f2fs \
                  sbin/nano sbin/etc/nano
+
+          # 第二组：语言包。TWRP 自带的 19 个语言文件全是英文/欧洲语言，
+          # 没有任何中文（TW_DEFAULT_LANGUAGE=zh_CN 从未生效）。
+          # 用户只要中文，删掉全部语言文件后 UI 回退到内置英文字符串。
+          rm -rf twres/languages
+
+          # 第三组：确定无用的二进制（依赖图分析：从所有可执行文件出发不可达）
+          #   charger  = 关机充电动画，recovery 里用不到
+          #   linker   = 32 位动态链接器，TWRP 是 64 位
+          #   libncurses = nano/bash 的依赖，两个都已删
+          #   exfat 工具 = data/system 都是 ext4
+          #   openaes    = TW_INCLUDE_CRYPTO=false，加密备份已关闭
+          rm -rf sbin/charger sbin/linker sbin/libncurses.so \
+                 sbin/mkexfatfs sbin/fsck.exfat sbin/exfat-fuse sbin/libexfat_twrp.so \
+                 sbin/openaes sbin/libopenaes.so \
+                 sbin/libext2_profile.so sbin/libnetd_client.so sbin/libtinyxml2.so \
+                 sbin/me.twrp.twrpapp.apk ramdisk-files.sha256sum
+
+          # 第四组：HIDL / vintf 遗留库（Android 9 分支带进来，
+          # 纯 C++ recovery 在 3.10 内核上不经过 binder/HIDL）。
+          # 这一组是运行时 dlopen 候选，删后有风险；单独列出方便回退。
+          rm -rf sbin/android.hardware.keymaster@3.0.so \
+                 sbin/android.hidl.token@1.0.so \
+                 sbin/libhidl-gen-utils.so sbin/libhidlbase.so \
+                 sbin/libhidltransport.so sbin/libhwbinder.so sbin/libvintf.so
+
+          echo "=== 精简后 ramdisk 内容统计 ==="
+          du -sh . | tail -1
+          du -sh sbin twres 2>/dev/null
 
           # find+cpio 重打包；-R 0:0 统一属主，--null 防文件名空格
           find . -print0 | cpio --null -o -H newc --quiet -R 0:0 \
