@@ -186,3 +186,21 @@ BOARD_ROOT_EXTRA_FOLDERS := \
 # TARGET_KERNEL_SOURCE := kernel/gionee/gbl7356
 # TARGET_KERNEL_CONFIG := gbl7356_defconfig
 TARGET_KERNEL_ARCH := arm64
+
+# ==============================================================================
+# Java 编译：关掉 Jack
+# ==============================================================================
+# build/core/clear_vars.mk:111 会把每个 Java 模块的 LOCAL_JACK_ENABLED 预置成
+# DEFAULT_JACK_ENABLED，而 config.mk:662 在 ANDROID_COMPILE_WITH_JACK=true 时
+# 把它设成 full。于是整棵树的 Java 模块都挂着 `| setup-jack-server` 这个
+# order-only 依赖，构建一上来就得先起 Jack 服务。
+#
+# jack-admin 起服务用的是 TLSv1 + 自签 JKS，现在的 Temurin 8 已经把旧协议和
+# 弱算法禁掉了，服务端每次都在握手里死掉：
+#   Jack server failed to (re)start
+#   SSL error when connecting to the Jack server
+# 而且 Jack 在 8.0 就已经被 AOSP 废弃，官方路线是 javac + dx。
+#
+# 设为 false 后 configure_local_jack.mk:21 会清空所有模块的 LOCAL_JACK_ENABLED，
+# setup-jack-server 从依赖图里消失，改用 javac 编译、dx 生成 dex。
+ANDROID_COMPILE_WITH_JACK := false
