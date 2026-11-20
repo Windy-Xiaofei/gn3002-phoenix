@@ -1,5 +1,8 @@
 # 由 tools/extract-files.sh 自动生成，请勿手改
 # 格式: 目标相对路径 源大小 类别
+lib/egl/egl.cfg                                                   76  lib
+lib/egl/libGLES_android.so                                     79124  lib
+lib/egl/libGLES_mali.so                                     18697748  lib
 lib/hw/audio.primary.default.so                                 5316  hal
 lib/hw/audio.primary.mt6735.so                               1063232  hal
 lib/hw/audio.r_submix.default.so                               30064  hal
@@ -81,6 +84,8 @@ lib/libsecurity.so                                              5648  lib
 lib/libsrsprocessing.so                                       797520  lib
 lib/libudf.so                                                  50488  lib
 lib/libwifi-service.so                                         71304  lib
+lib64/egl/libGLES_android.so                                  132576  lib
+lib64/egl/libGLES_mali.so                                   23205384  lib
 lib64/hw/audio.primary.default.so                               9872  hal
 lib64/hw/audio.primary.mt6735.so                             1170120  hal
 lib64/hw/audio.r_submix.default.so                             55040  hal

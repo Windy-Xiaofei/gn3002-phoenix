@@ -1,6 +1,9 @@
 # 由 tools/extract-files.sh 自动生成，请勿手改
 LOCAL_BLOBS := $(LOCAL_PATH)/blobs
 
+PRODUCT_COPY_FILES += $(LOCAL_BLOBS)/lib/egl/egl.cfg:$(TARGET_COPY_OUT_VENDOR)/lib/egl/egl.cfg
+PRODUCT_COPY_FILES += $(LOCAL_BLOBS)/lib/egl/libGLES_android.so:$(TARGET_COPY_OUT_VENDOR)/lib/egl/libGLES_android.so
+PRODUCT_COPY_FILES += $(LOCAL_BLOBS)/lib/egl/libGLES_mali.so:$(TARGET_COPY_OUT_VENDOR)/lib/egl/libGLES_mali.so
 PRODUCT_COPY_FILES += $(LOCAL_BLOBS)/lib/hw/audio.primary.default.so:$(TARGET_COPY_OUT_VENDOR)/lib/hw/audio.primary.default.so
 PRODUCT_COPY_FILES += $(LOCAL_BLOBS)/lib/hw/audio.primary.mt6735.so:$(TARGET_COPY_OUT_VENDOR)/lib/hw/audio.primary.mt6735.so
 PRODUCT_COPY_FILES += $(LOCAL_BLOBS)/lib/hw/audio.r_submix.default.so:$(TARGET_COPY_OUT_VENDOR)/lib/hw/audio.r_submix.default.so
@@ -82,6 +85,8 @@ PRODUCT_COPY_FILES += $(LOCAL_BLOBS)/lib/libsecurity.so:$(TARGET_COPY_OUT_VENDOR
 PRODUCT_COPY_FILES += $(LOCAL_BLOBS)/lib/libsrsprocessing.so:$(TARGET_COPY_OUT_VENDOR)/lib/libsrsprocessing.so
 PRODUCT_COPY_FILES += $(LOCAL_BLOBS)/lib/libudf.so:$(TARGET_COPY_OUT_VENDOR)/lib/libudf.so
 PRODUCT_COPY_FILES += $(LOCAL_BLOBS)/lib/libwifi-service.so:$(TARGET_COPY_OUT_VENDOR)/lib/libwifi-service.so
+PRODUCT_COPY_FILES += $(LOCAL_BLOBS)/lib64/egl/libGLES_android.so:$(TARGET_COPY_OUT_VENDOR)/lib64/egl/libGLES_android.so
+PRODUCT_COPY_FILES += $(LOCAL_BLOBS)/lib64/egl/libGLES_mali.so:$(TARGET_COPY_OUT_VENDOR)/lib64/egl/libGLES_mali.so
 PRODUCT_COPY_FILES += $(LOCAL_BLOBS)/lib64/hw/audio.primary.default.so:$(TARGET_COPY_OUT_VENDOR)/lib64/hw/audio.primary.default.so
 PRODUCT_COPY_FILES += $(LOCAL_BLOBS)/lib64/hw/audio.primary.mt6735.so:$(TARGET_COPY_OUT_VENDOR)/lib64/hw/audio.primary.mt6735.so
 PRODUCT_COPY_FILES += $(LOCAL_BLOBS)/lib64/hw/audio.r_submix.default.so:$(TARGET_COPY_OUT_VENDOR)/lib64/hw/audio.r_submix.default.so

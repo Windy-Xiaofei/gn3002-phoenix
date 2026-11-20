@@ -136,11 +136,13 @@ PRODUCT_COPY_FILES += \
 
 # ------------------------------------------------------------------------------
 # 基础包
+#
+# 只列 8.1 源码树里真实存在的模块。厂商那批（libGLES_mali、libion_mtk……）
+# 由 blobs/blobs.mk 以 PRODUCT_COPY_FILES 拷进 /system/vendor，
+# 写进 PRODUCT_PACKAGES 会直接报 "module not found"。
 # ------------------------------------------------------------------------------
 PRODUCT_PACKAGES += \
-    libGLES_mali \
     libion \
-    libion_mtk \
     libstagefright_omx \
     libstagefright_omx_soft
 

@@ -6,7 +6,8 @@ on:
     branches: [ main ]
     paths:
       - 'device.mk'
-      - 'lineage_gbl7356.mk'
+      - 'lineage.mk'
+      - 'AndroidProducts.mk'
       - 'BoardConfig.mk'
       - 'blobs/**'
       - 'rootdir/**'
