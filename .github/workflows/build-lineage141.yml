@@ -220,6 +220,25 @@ jobs:
           ccache -z || true
           source build/envsetup.sh
           lunch lineage_gbl7356-userdebug
+
+          # ----- 伪造 KERNEL_OBJ/usr -------------------------------------------
+          # 7.1 的 libtinyalsa 等模块无条件依赖
+          #   out/target/product/gbl7356/obj/KERNEL_OBJ/usr
+          # 这个目录本来由 vendor/cm/build/tasks/kernel.mk 在
+          #   ifeq ($(FULL_KERNEL_BUILD),true)
+          # 块里生成（第 201 行定义 KERNEL_HEADERS_INSTALL，第 331 行给规则）。
+          # 我们用的是 TARGET_PREBUILT_KERNEL（原厂内核，不改），于是
+          # FULL_KERNEL_BUILD := false，那段规则整块不存在，ninja 报：
+          #   ninja: error: '.../obj/KERNEL_OBJ/usr', needed by
+          #   '.../libtinyalsa_intermediates/mixer.o', missing and no known rule
+          #
+          # ninja 对目录型依赖只检查存在性，所以建个空目录就够。
+          # 这些模块真正需要的头文件由 bionic/kernel-headers（prebuilts）
+          # 提供，不依赖这里。
+          KOBJ=out/target/product/gbl7356/obj/KERNEL_OBJ
+          mkdir -p "$KOBJ/usr/include" "$KOBJ/usr/arch"
+          echo "已建 $KOBJ/usr（绕过 FULL_KERNEL_BUILD 的依赖）"
+          ls -la "$KOBJ"
           # 默认全量 systemimage（boot.img 会顺带产出，systemimage 依赖
           # recovery_from_boot.p）。手动触发时可以填 bootimage 只打 boot.img，
           # 调 ramdisk / cmdline 时十几分钟就能出结果。
