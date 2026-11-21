@@ -214,21 +214,23 @@ TARGET_KERNEL_ARCH := arm64
 ANDROID_COMPILE_WITH_JACK := false
 
 # ==============================================================================
-# SELinux 策略：8.1 的 v30 加载不了，构建后要换成原厂 5.1 的 v26
+# SELinux 策略版本：降到 29
 # ==============================================================================
-# 开机日志：
+# 这颗 2016 年的 3.10.65 内核，SELinux 只实现到策略版本 29：
 #   SELinux: policydb version 30 does not match my version range 15-29
-#   init: Failed to load monolithic SELinux policy: Invalid argument
-#   init: panic: rebooting to bootloader
+# Android 8.1 默认产出 v30，内核读都不读就 EINVAL，init 走 security_failure()
+# 直接重启进 bootloader。
 #
-# 这颗 3.10.65 内核的 SELinux 只到策略版本 29。想用
-# `POLICYVERS := 29` 让构建系统直接产出 v29 也不行，实测编译就挂：
+# system/sepolicy/Android.mk:33 是 `POLICYVERS ?= 30`，注释写着
+# "Must be <= /sys/fs/selinux/policyvers reported by the Android kernel"，
+# 这里覆盖成 29。
+#
+# 但直接降版本编译会挂：
 #   libsepol.avtab_write_item: policy version 29 does not support ioctl
 #   extendedpermissions rules and one was specified
-# 8.1 的策略大量使用 ioctl 扩展权限，那是 v30 才有的特性，降不下来。
-#
-# 所以走事后替换：构建出 boot.img 之后，把 ramdisk 里的 /sepolicy 换成
-# 原厂 5.1 系统那份（v26，284365 字节，从 work/rom/boot.img 里取的，
-# 就是这台机器当年真正跑过的策略）。见 ci/patch_boot_ramdisk.py
-# 和工作流里的 "Patch boot sepolicy" 步骤。
-# 配合 cmdline 的 androidboot.selinux=permissive，标签对不上也不会拦。
+# 因为 8.1 策略里用了 ioctl 扩展权限（v30 特性）。内核本来也不支持这东西，
+# 所以 CI 里会先给 libsepol 打个补丁：写 v29 策略时把 xperm 节点从 avtab
+# 里摘掉，其余规则（init_exec、域切换、属性标签）原样保留。
+# 见 .github/workflows/build-lineage.yml 的 "Patch libsepol for v29"。
+POLICYVERS := 29
+

@@ -112,6 +112,12 @@ jobs:
           repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags --optimized-fetch
           df -h /
 
+      # 内核的 SELinux 只到 v29，8.1 策略默认是 v30，且用了 ioctl 扩展权限。
+      # 给 libsepol 打补丁，写 v29 时把这些节点摘掉，其余规则全部保留。
+      - name: Patch libsepol for v29
+        run: |
+          python3 dt/ci/patch-libsepol.py rom/external/selinux/libsepol/src/write.c
+
       - name: Place device tree
         run: |
           mkdir -p rom/device/gionee/gbl7356
@@ -204,19 +210,6 @@ jobs:
           fi
           df -h /
           exit $rc
-
-      # Android 8.1 产出的 /sepolicy 是 v30，这颗 3.10.65 内核只认 15-29，
-      # init 加载失败会 security_failure() 直接重启进 bootloader。
-      # 用 POLICYVERS := 29 降级编译也不行（8.1 策略用了 ioctl 扩展权限，
-      # v29 写不出来），所以构建完把策略和整套上下文表换成原厂 5.1 的。
-      - name: Patch boot sepolicy
-        if: always()
-        run: |
-          BOOT=rom/out/target/product/gbl7356/boot.img
-          if [ ! -f "$BOOT" ]; then echo "没有 boot.img，跳过"; exit 0; fi
-          python3 dt/ci/patch_ramdisk_set.py "$BOOT" /tmp/boot-patched.img dt/ci/ramdisk-replace.txt
-          cp /tmp/boot-patched.img "$BOOT"
-          ls -l "$BOOT"
 
       - name: Package output
         if: always()
