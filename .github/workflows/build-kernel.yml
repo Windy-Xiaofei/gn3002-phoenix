@@ -134,7 +134,26 @@ jobs:
           cd kernel
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
-          make -j$(nproc) Image 2>&1 | tail -30
+          # 不要用 `| tail -30`：3.10 用新 GCC 编会刷出几万行告警，
+          # 真正的 error 行全被 tail 截掉了，只能看到一句
+          #   make: *** [Makefile:819: fs] Error 2
+          # 完全看不出错在哪。改成落盘 + 失败时精准提取。
+          # -k 让 make 遇到错误继续，一次把所有失败点都报出来，
+          # 省得一个错误修一轮。
+          set +e
+          make -k -j$(nproc) Image > /tmp/kbuild.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" != "0" ]; then
+            echo "===== 编译失败，提取错误上下文 ====="
+            echo "--- 所有 error: 行（去重）---"
+            grep -hE "error:|fatal error:" /tmp/kbuild.log | sed 's/^.*\(error:\)/\1/' | sort -u | head -30 || true
+            echo "--- 原始 error 行（带文件）---"
+            grep -nE "error:|fatal error:" /tmp/kbuild.log | head -25 || true
+            echo "--- 日志尾部 25 行 ---"
+            tail -25 /tmp/kbuild.log
+            exit $rc
+          fi
           ls -lh arch/arm64/boot/Image
 
       - name: Build smoke init
