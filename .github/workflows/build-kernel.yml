@@ -1,0 +1,407 @@
+name: Kernel
+
+# 编 MT6735 的 3.10.65 内核。只为了一个目的：
+# 3.10 的 binder 只有 /dev/binder，而 Android 8.0 起 HIDL 需要
+# /dev/hwbinder + /dev/vndbinder 两个额外的域，否则 hwservicemanager
+# 一启动就退出，4 次之后 init 判 critical 失败 -> panic -> 进 bootloader。
+#
+# 内核其它部分一律不动：显示、触摸、WiFi、基带全保持原厂行为。
+# 配置也不是从零写的，而是拿同代 MT6735 的 sf6735_65c_l1_defconfig
+# 当基准（GN3002 就是 65C 变体），只叠加我们在意的那几项。
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'smoke = 只跑 qemu 冒烟测试；full = 出真机 Image.gz-dtb'
+        required: false
+        default: full
+  push:
+    branches: [ main ]
+    paths:
+      - 'ci/patch-binder-hwbinder.py'
+      - 'kernel/**'
+      - '.github/workflows/build-kernel.yml'
+
+concurrency:
+  group: kernel-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ===========================================================================
+  # 第一关：qemu 冒烟测试
+  # ===========================================================================
+  # 为什么要跑这个：内核补丁改的是 binder 的设备注册逻辑，一旦改错
+  # （比如 misc_register 失败、符号顺序错、C89 声明问题），编出来的
+  # 内核在真机上表现是"刷完不启动"，而且没有任何日志可看——只能用
+  # SPFT 重新刷回来。一轮真机验证要 20 分钟以上。
+  #
+  # 所以先在 qemu 里把内核跑起来，验证三件事：
+  #   1. 内核能编过、能引导到 init（不是编过了就算数）
+  #   2. /dev/binder、/dev/hwbinder、/dev/vndbinder 三个节点都建出来了
+  #   3. 三个节点能各自注册 context manager，互不干扰
+  #
+  # qemu 用的是 virt 平台 + 我们编的 arm64 内核 + 一个最小的 initramfs，
+  # 和真机硬件无关，只验证 binder 这一层。
+  smoke:
+    if: github.event.inputs.mode != 'full'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout device tree
+        uses: actions/checkout@v4
+        with:
+          path: dt
+          fetch-depth: 1
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex build-essential libssl-dev libelf-dev \
+            gcc-aarch64-linux-gnu cpio qemu-system-arm \
+            device-tree-compiler python3
+          aarch64-linux-gnu-gcc --version | head -1
+          qemu-system-aarch64 --version | head -1
+
+      - name: Fetch kernel source
+        run: |
+          # ALPS.L1.MP3.V2 就是 MTK 给厂商的 3.10.65 基线，
+          # SV6735_65C 与 GN3002 的 SoC 变体一致。
+          git clone --depth 1 \
+            https://github.com/itzmanish/ALPS.L1.MP3.V2_SF6735_65C_L1_KERNEL.git \
+            kernel
+          du -sh kernel
+          head -5 kernel/Makefile
+
+      - name: Apply binder patch
+        run: |
+          python3 dt/ci/patch-binder-hwbinder.py kernel/drivers/android/binder.c
+          echo "--- 核对补丁关键点 ---"
+          grep -c "hwbinder_miscdev\|vndbinder_miscdev" kernel/drivers/android/binder.c
+          grep -n "binder_dev_name" kernel/drivers/android/binder.c | head -5
+          python3 - <<'EOF'
+          import re, sys
+          s = open('kernel/drivers/android/binder.c', encoding='utf-8', errors='replace').read()
+          # 三个 open 薄壳必须出现在 binder_fops 之前
+          order = []
+          for name in ('binder_open_common', 'binder_open', 'hwbinder_open',
+                       'vndbinder_open', 'binder_fops'):
+              m = re.search(r'(?:static\s+)?(?:const\s+)?struct\s+\w+\s+' + name + r'\b|static\s+int\s+' + name + r'\b', s)
+              order.append((m.start() if m else -1, name))
+          print(order)
+          bad = [n for i, n in order if i < 0]
+          if bad:
+              sys.exit('缺少符号: %s' % bad)
+          if order != sorted(order):
+              sys.exit('符号顺序不对，C 会报隐式声明: %s' % order)
+          print('符号顺序检查通过')
+          EOF
+
+      - name: Configure kernel (smoke)
+        run: |
+          cd kernel
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          # qemu 只用 virt 平台，不需要 MTK 那一堆外设驱动。
+          # 用 defconfig 打底 + 打开我们关心的几项，编译量小很多。
+          make defconfig
+          ./scripts/config \
+            --enable CONFIG_ANDROID_BINDER_IPC \
+            --enable CONFIG_ANDROID_BINDER_DEBUG \
+            --enable CONFIG_DEVTMPFS \
+            --enable CONFIG_DEVTMPFS_MOUNT \
+            --enable CONFIG_BLK_DEV_INITRD \
+            --enable CONFIG_SERIAL_AMBA_PL011 \
+            --enable CONFIG_SERIAL_AMBA_PL011_CONSOLE \
+            --disable CONFIG_ANDROID_BINDER_IPC_32BIT \
+            --enable CONFIG_BINFMT_ELF || true
+          make olddefconfig
+          grep -E "BINDER|DEVTMPFS|INITRD" .config | head -10
+
+      - name: Build kernel (smoke)
+        run: |
+          cd kernel
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          make -j$(nproc) Image 2>&1 | tail -30
+          ls -lh arch/arm64/boot/Image
+
+      - name: Build smoke init
+        run: |
+          # 最小 initramfs 里没有 shell，所以 init 自己写成一个静态 C 程序。
+          # 它做三件事：
+          #   1. 打印内核版本，证明真的引导起来了
+          #   2. 检查三个 binder 设备节点是否建出来
+          #   3. 对三个设备各自 open + BINDER_SET_CONTEXT_MGR，
+          #      验证"每个域有自己的 handle 0"这个补丁目标成立
+          cat > /tmp/init.c <<'CEOF'
+          #include <stdio.h>
+          #include <fcntl.h>
+          #include <unistd.h>
+          #include <string.h>
+          #include <errno.h>
+          #include <sys/ioctl.h>
+          #include <sys/mount.h>
+          #include <sys/reboot.h>
+          #include <sys/utsname.h>
+
+          /* 内核 uapi 里是 #define BINDER_SET_CONTEXT_MGR _IOW('b', 7, __s32)，
+           * __s32 与 int 同为 4 字节，_IOW 算出来的命令号一致。 */
+          #define BINDER_SET_CONTEXT_MGR   _IOW('b', 7, int)
+
+          static int ctx_mgr(int fd) { return ioctl(fd, BINDER_SET_CONTEXT_MGR, 0); }
+
+          int main(void)
+          {
+              struct utsname u;
+              const char *devs[] = { "/dev/binder", "/dev/hwbinder", "/dev/vndbinder" };
+              int fds[3];
+              int i, ok = 1;
+
+              mount("proc",  "/proc", "proc",  0, NULL);
+              mount("sysfs", "/sys",  "sysfs", 0, NULL);
+              mount("devtmpfs", "/dev", "devtmpfs", 0, NULL);
+
+              printf("=== SMOKE-START ===\n");
+              if (uname(&u) == 0)
+                  printf("kernel: %s %s %s\n", u.sysname, u.release, u.machine);
+              fflush(stdout);
+
+              for (i = 0; i < 3; i++) {
+                  fds[i] = open(devs[i], O_RDWR);
+                  if (fds[i] < 0) {
+                      printf("MISS %s (%s)\n", devs[i], strerror(errno));
+                      ok = 0;
+                  } else {
+                      printf("OPEN %s fd=%d\n", devs[i], fds[i]);
+                  }
+                  fflush(stdout);
+              }
+
+              /* 三个域各自注册 context manager，必须都成功才算隔离生效 */
+              for (i = 0; i < 3; i++) {
+                  if (fds[i] < 0) continue;
+                  if (ctx_mgr(fds[i]) == 0) {
+                      printf("CTXMG-OK   %s\n", devs[i]);
+                  } else {
+                      printf("CTXMG-FAIL %s (%s)\n", devs[i], strerror(errno));
+                      ok = 0;
+                  }
+                  fflush(stdout);
+              }
+
+              printf("%s\n", ok ? "SMOKE-RESULT-PASS" : "SMOKE-RESULT-FAIL");
+              printf("=== SMOKE-END ===\n");
+              fflush(stdout);
+
+              sync();
+              reboot(RB_POWER_OFF);
+              return ok ? 0 : 1;
+          }
+          CEOF
+          aarch64-linux-gnu-gcc -static -O2 -o /tmp/smoke-init /tmp/init.c
+          ls -lh /tmp/smoke-init
+
+      - name: Build minimal initramfs
+        run: |
+          set -e
+          mkdir -p irfs/{dev,proc,sys}
+          cp /tmp/smoke-init irfs/init
+          chmod +x irfs/init
+          # devtmpfs 由内核在 mount 之后填，但 console 必须先在 cpio 里存在
+          sudo mknod irfs/dev/console c 5 1
+          sudo mknod irfs/dev/null    c 1 3
+          cd irfs && find . | cpio -o -H newc 2>/dev/null | gzip -9 > ../initramfs.cpio.gz
+          ls -lh ../initramfs.cpio.gz
+
+      - name: Boot in qemu
+        run: |
+          timeout 180 qemu-system-aarch64 \
+            -machine virt -cpu cortex-a53 -m 1024 -smp 2 -nographic \
+            -kernel kernel/arch/arm64/boot/Image \
+            -initrd kernel/initramfs.cpio.gz \
+            -append "console=ttyAMA0 rdinit=/init loglevel=7" \
+            > /tmp/qemu.log 2>&1 || true
+          echo "===== qemu 输出（尾部） ====="
+          tail -80 /tmp/qemu.log
+
+      - name: Assert smoke results
+        run: |
+          LOG=/tmp/qemu.log
+          fail=0
+          grep -q "SMOKE-START" "$LOG" || { echo "FAIL: 内核没能引导到 init"; fail=1; }
+
+          for d in binder hwbinder vndbinder; do
+            grep -q "OPEN /dev/$d" "$LOG"      || { echo "FAIL: 打不开 /dev/$d"; fail=1; }
+            grep -q "CTXMG-OK   /dev/$d" "$LOG" || { echo "FAIL: /dev/$d 注册 context manager 失败"; fail=1; }
+          done
+
+          # 补丁里两处 pr_info，能进一步确认注册路径走到了
+          grep -qi "binder: /dev/hwbinder registered"  "$LOG" || echo "WARN: 没有 hwbinder 注册日志"
+          grep -qi "binder: /dev/vndbinder registered" "$LOG" || echo "WARN: 没有 vndbinder 注册日志"
+          # 出现 EBUSY 说明三个域还在共用同一个 context manager，补丁没生效
+          if grep -q "BINDER_SET_CONTEXT_MGR already set" "$LOG"; then
+            echo "FAIL: 三个域仍然共用 context manager（EBUSY）"; fail=1
+          fi
+
+          if grep -qE "Kernel panic|BUG: |Unable to handle|Oops" "$LOG"; then
+            echo "FAIL: 内核运行时报错"; fail=1
+          fi
+
+          if [ "$fail" != "0" ]; then
+            echo "===== 冒烟失败，完整日志 ====="
+            cat "$LOG"
+            exit 1
+          fi
+          echo "冒烟测试通过：三个 binder 域各自独立，能注册 context manager"
+
+      # =========================================================================
+      # 第二关：真机内核
+      # =========================================================================
+  build:
+    needs: [smoke]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    # 只有"冒烟关成功"或者"冒烟关被跳过"才继续。YAML 里同一个键不能写两次，
+    # 所以 mode 的判断合并进这一个表达式。
+    if: |
+      always() &&
+      (needs.smoke.result == 'success' || needs.smoke.result == 'skipped') &&
+      github.event.inputs.mode != 'smoke'
+
+    steps:
+      - name: Checkout device tree
+        uses: actions/checkout@v4
+        with:
+          path: dt
+          fetch-depth: 1
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex build-essential libssl-dev libelf-dev \
+            gcc-aarch64-linux-gnu device-tree-compiler python3
+          aarch64-linux-gnu-gcc --version | head -1
+
+      - name: Fetch kernel source
+        run: |
+          git clone --depth 1 \
+            https://github.com/itzmanish/ALPS.L1.MP3.V2_SF6735_65C_L1_KERNEL.git \
+            kernel
+
+      - name: Apply binder patch
+        run: |
+          python3 dt/ci/patch-binder-hwbinder.py kernel/drivers/android/binder.c
+
+      - name: Configure kernel
+        run: |
+          cd kernel
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+
+          # 基准：sf6735_65c_l1_defconfig。
+          # GN3002 是 MT6735 的 65C + L1 变体，这份配置里有
+          #   CONFIG_LCM_WIDTH="720" / CONFIG_LCM_HEIGHT="1280"
+          # 与 GN3002 的屏幕完全一致，说明它就是同一分辨率的参考配置。
+          # 原厂 config 拿不到（vmlinux 无 IKCONFIG，厂家未公开源码），
+          # 这是目前能找到的最接近的一份。
+          make sf6735_65c_l1_defconfig
+
+          # 只动我们在意的几项，其余保持 defconfig 原样。
+          ./scripts/config \
+            --enable  CONFIG_ANDROID \
+            --enable  CONFIG_ANDROID_BINDER_IPC \
+            --disable CONFIG_ANDROID_BINDER_IPC_32BIT \
+            --enable  CONFIG_ANDROID_BINDER_DEBUG || true
+
+          # 触摸：原厂用的是 Focaltech ft8606（原厂 vmlinux 里能查到
+          # tm_ft8606 / focaltech 字样），但这棵公版源码树里没有 ft8606，
+          # 只有 ft5x0x / ft5206 / ft5316 / ft5406。
+          # 这几个是同一家（Focaltech）不同代的驱动，I2C 协议相近。
+          # 注意符号名是 CONFIG_MTK_FT5X0X，不是 CONFIG_TOUCHSCREEN_MTK_*，
+          # 以 mediatek/Makefile 里的写法为准。
+          # 触摸起不来不影响系统启动验证，所以不在这里阻塞。
+          ./scripts/config \
+            --enable  CONFIG_TOUCHSCREEN_MTK \
+            --disable CONFIG_TOUCHSCREEN_MTK_GT1151 \
+            --enable  CONFIG_MTK_FT5X0X || true
+
+          make olddefconfig
+
+          echo "===== 关键配置 ====="
+          grep -E "CONFIG_ANDROID_BINDER|CONFIG_TOUCHSCREEN_MTK|CONFIG_LCM_|CONFIG_MTK_FB=" .config | sort
+          echo "===== 确认 binder 是 64 位协议 ====="
+          if grep -q "^CONFIG_ANDROID_BINDER_IPC_32BIT=y" .config; then
+            echo "FATAL: 32 位 binder 协议，8.1 的 64 位用户空间用不了"; exit 1
+          fi
+          echo "OK"
+
+      - name: Build kernel
+        run: |
+          cd kernel
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          set -o pipefail
+          make -j$(nproc) Image.gz 2>&1 \
+            | stdbuf -oL tee /tmp/kbuild.log \
+            | awk 'BEGIN{last=-2} {if ($0 ~ /^\[ *[0-9]+%/) {match($0,/[0-9]+%/); p=substr($0,RSTART,RLENGTH-1)+0; if (p>=last+2) {print; fflush(); last=p} next} print; fflush()}'
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" != "0" ]; then
+            echo "===== 失败上下文 ====="
+            grep -n "error:\|Error " /tmp/kbuild.log | head -40 || true
+            tail -40 /tmp/kbuild.log
+            exit $rc
+          fi
+          ls -lh arch/arm64/boot/Image.gz
+
+      # Image.gz-dtb = gzip(kernel) + dtb，原厂用的就是这个格式。
+      # 原厂 DTB 一个字节没动，直接拼在编出来的 Image.gz 后面。
+      - name: Assemble Image.gz-dtb
+        run: |
+          set -e
+          cd kernel
+          # 原厂 DTB 从 prebuilt 里切出来（gzip 流结束之后的部分）
+          python3 - <<'EOF'
+          import zlib, sys
+          src = 'dt/prebuilt/Image.gz-dtb'
+          d = open(src, 'rb').read()
+          o = zlib.decompressobj(16 + zlib.MAX_WBITS)
+          o.decompress(d)
+          dtb = o.unused_data
+          if dtb[:4] != b'\xd0\x0d\xfe\xed':
+              sys.exit('原厂 prebuilt 里没有找到 DTB magic')
+          open('stock.dtb', 'wb').write(dtb)
+          print('原厂 DTB: %d 字节' % len(dtb))
+          EOF
+          cat arch/arm64/boot/Image.gz stock.dtb > Image.gz-dtb
+          ls -lh Image.gz-dtb
+          python3 - <<'EOF'
+          import zlib
+          d = open('kernel/Image.gz-dtb', 'rb').read() if False else open('Image.gz-dtb','rb').read()
+          o = zlib.decompressobj(16 + zlib.MAX_WBITS)
+          k = o.decompress(d)
+          print('内核解压后: %d 字节' % len(k))
+          print('DTB: %d 字节' % len(o.unused_data))
+          print('DTB magic OK:', o.unused_data[:4] == b'\xd0\x0d\xfe\xed')
+          EOF
+
+      - name: Package
+        if: always()
+        run: |
+          mkdir -p out
+          cp kernel/Image.gz-dtb out/ 2>/dev/null || true
+          cp kernel/arch/arm64/boot/Image.gz out/ 2>/dev/null || true
+          cp kernel/arch/arm64/boot/Image out/ 2>/dev/null || true
+          cp kernel/.config out/kernel-config.txt 2>/dev/null || true
+          ls -lh out/
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-gbl7356-${{ github.run_number }}
+          path: out/
+          if-no-files-found: warn
+          retention-days: 14
