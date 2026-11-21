@@ -52,7 +52,7 @@ NEW = '''FirstStageMount::FirstStageMount()
         for (const char* path : kFallbackFstabPaths) {
             device_tree_fstab_.reset(fs_mgr_read_fstab(path));
             if (device_tree_fstab_) {
-                LOG(INFO) << "No fstab in device tree; using " << path;
+                LOG(WARNING) << "No fstab in device tree; using " << path;
                 break;
             }
         }
@@ -77,7 +77,39 @@ NEW = '''FirstStageMount::FirstStageMount()
     }
 }'''
 
-MARK = 'No fstab in device tree; using '
+CTOR_MARK = 'No fstab in device tree; using '
+GATE_MARK = 'falling back to ramdisk fstab'
+
+# ---------------------------------------------------------------------------
+# 第二处：守卫函数。这个才是真正拦路的地方。
+#
+# bool DoFirstStageMount() {
+#     if (IsRecoveryMode()) { ... return true; }
+#     // Firstly checks if device tree fstab entries are compatible.
+#     if (!is_android_dt_value_expected("fstab/compatible", "android,fstab")) {
+#         LOG(INFO) << "First stage mount skipped (missing/incompatible fstab in device tree)";
+#         return true;            // ← 构造函数根本没被调用
+#     }
+#     std::unique_ptr<FirstStageMount> handle = FirstStageMount::Create();
+#     ...
+#
+# 第一版补丁只改了构造函数，结果这个守卫在它之前就 return 了，
+# ramdisk 里的 fstab 一次都没被读过（日志里连 "No fstab in device tree; using"
+# 都看不到，只有一句 INFO 级的 skipped，被 ignore_loglevel 之外的因素吞掉了）。
+# 所以必须把这道门也拆掉。
+# ---------------------------------------------------------------------------
+GATE_OLD = '''    // Firstly checks if device tree fstab entries are compatible.
+    if (!is_android_dt_value_expected("fstab/compatible", "android,fstab")) {
+        LOG(INFO) << "First stage mount skipped (missing/incompatible fstab in device tree)";
+        return true;
+    }'''
+
+GATE_NEW = '''    // 这颗 3.10 的 MTK 内核 DTB 里没有 /firmware/android/fstab 节点。
+    // 原逻辑直接 return true 跳过整个第一阶段挂载，/system 因此永远挂不上。
+    // 这里改成继续往下走，由 FirstStageMount 的构造函数从 ramdisk 的固定路径读。
+    if (!is_android_dt_value_expected("fstab/compatible", "android,fstab")) {
+        LOG(WARNING) << "No fstab/compatible in device tree; falling back to ramdisk fstab";
+    }'''
 
 
 def main():
@@ -87,16 +119,24 @@ def main():
     path = sys.argv[1]
     s = open(path, encoding='utf-8').read()
 
-    if MARK in s:
+    todo = []
+    if CTOR_MARK not in s:
+        todo.append(('ctor', OLD, NEW))
+    if GATE_MARK not in s:
+        todo.append(('gate', GATE_OLD, GATE_NEW))
+
+    if not todo:
         print('已经打过补丁，跳过')
         return
 
-    if OLD not in s:
-        sys.exit('没找到待替换片段，源码结构可能变了')
+    for name, old, new in todo:
+        if old not in s:
+            sys.exit('没找到待替换片段(%s)，源码结构可能变了' % name)
+        s = s.replace(old, new)
+        print('  已替换:', name)
 
-    s = s.replace(OLD, NEW)
     open(path, 'w', encoding='utf-8').write(s)
-    print('已给 init_first_stage.cpp 打补丁：DT 无 fstab 时用固定路径回落，只挂 /system、/vendor')
+    print('已给 init_first_stage.cpp 打补丁：拆掉 DT fstab 守卫 + DT 缺失时用固定路径回落')
 
 
 if __name__ == '__main__':

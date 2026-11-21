@@ -61,7 +61,12 @@ TARGET_SUPPORTS_64_BIT_APPS := true
 # MT6735 的前 512KB 被 LK / ATF 用掉了，写错这个值内核会解压到错误地址，
 # 表现就是开机直接复位、无任何日志。
 # ------------------------------------------------------------------------------
-BOARD_KERNEL_CMDLINE := bootopt=64S3,32N2,64N2 androidboot.hardware=mt6735 androidboot.selinux=permissive ignore_loglevel
+# loglevel=4：只把 KERN_WARNING 及以上送进 console/ram_console。
+# 之前用 ignore_loglevel 把所有级别都打出来，结果 3 秒就把 64 KB 的
+# ram_console 写满，第一阶段的日志被后面第二阶段的噪声冲掉了，
+# 拉 last_kmsg 只能看到"已经跳过挂载"的结果，看不到原因。
+# 现在只留 warning/error，第一阶段那几行能完整保留。
+BOARD_KERNEL_CMDLINE := bootopt=64S3,32N2,64N2 androidboot.hardware=mt6735 androidboot.selinux=permissive loglevel=4
 # androidboot.hardware=mt6735：8.1 的 init 不再从 /proc/cpuinfo 猜硬件名
 # （5.1 时代那个 get_hardware_name() 已经删掉），只认 ro.boot.hardware，
 # 为空时 export_kernel_boot_props() 把 ro.hardware 设成 "unknown"。
