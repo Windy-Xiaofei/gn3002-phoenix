@@ -154,6 +154,49 @@ def fix_alarmtimer(kdir):
     print('  已修 alarmtimer.c 的 rtctimer 未声明')
 
 
+def fix_rt_rq(kdir):
+    """修 kernel/sched/rt.c 里 MTK 调试代码引用 rt_rq->rq 的问题。
+
+    MTK 在 sched_rt_runtime_exceeded() 里加了一段 printk 调试输出：
+
+        struct rt_bandwidth *rt_b = sched_rt_bandwidth(rt_rq);
+        int cpu = rq_cpu(rt_rq->rq);
+        printk_deferred("sched: cpu=%d rt_time ...", cpu, ...);
+
+    `rt_rq->rq` 这个字段在上游早被删掉了（现在是 rq_of_rt_rq() 系列辅助函数），
+    所以：
+
+        kernel/sched/rt.c:1084:39: error: 'struct rt_rq' has no member named 'rq'
+
+    这段是**无条件**的（不在 CONFIG_RT_GROUP_SCHED 里），所以关配置没用。
+
+    处理：cpu 号只用于调试打印，直接用 raw_smp_processor_id() 代替 ——
+    这段代码本身在持有 rq->lock 的上下文里跑，当前 CPU 就是它关心的那个。
+    """
+    p = os.path.join(kdir, 'kernel', 'sched', 'rt.c')
+    if not os.path.exists(p):
+        print('  警告: 找不到 %s，跳过' % p)
+        return
+    s = open(p, encoding='utf-8', errors='replace').read()
+
+    if 'GN3002_FIXED_RT_RQ' in s:
+        print('  rt.c 已修过，跳过')
+        return
+
+    bad = '\t\tint cpu = rq_cpu(rt_rq->rq);'
+    if bad not in s:
+        print('  警告: rt.c 里没找到 rq_cpu(rt_rq->rq)，跳过')
+        return
+
+    good = ('\t\t/* GN3002_FIXED_RT_RQ: rt_rq->rq 上游已删除，'
+            'cpu 号只用于这条调试打印，\n'
+            '\t\t * 用 raw_smp_processor_id() 代替（此处持有 rq->lock）。 */\n'
+            '\t\tint cpu = raw_smp_processor_id();')
+    s = s.replace(bad, good, 1)
+    open(p, 'w', encoding='utf-8', newline='\n').write(s)
+    print('  已修 rt.c 的 rt_rq->rq')
+
+
 def patch_top_makefile(kdir):
     """给顶层 Makefile 追加 -fcommon 和告警降级。"""
     p = os.path.join(kdir, 'Makefile')
@@ -265,6 +308,7 @@ def main():
     write_compat_header(kdir)
     link_mach_headers(kdir)
     fix_alarmtimer(kdir)
+    fix_rt_rq(kdir)
     patch_top_makefile(kdir)
     print('完成: 3.10 内核已适配现代 GCC')
 
