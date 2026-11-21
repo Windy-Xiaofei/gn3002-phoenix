@@ -184,3 +184,15 @@ PRODUCT_PROPERTY_OVERRIDES += \
 # ------------------------------------------------------------------------------
 PRODUCT_PROPERTY_OVERRIDES += \
     ro.boot.selinux=permissive
+
+# ==============================================================================
+# 调试：默认打开 adb
+# ==============================================================================
+# 系统起不来时最需要的是 logcat。8.1 默认 persist.sys.usb.config=none，
+# 即使 adbd 起来了也不会去拉 USB 配置，调试只能靠屏幕猜。
+#
+# 注意：这个变量只能在产品配置文件里设置。main.mk:105 有一道校验，
+# 在 config.mk（内含 BoardConfig.mk）之后、导入产品配置之前，如果发现它
+# 已经被赋值就直接报错：
+#     ADDITIONAL_DEFAULT_PROPERTIES must not be set before here
+ADDITIONAL_DEFAULT_PROPERTIES += persist.sys.usb.config=adb

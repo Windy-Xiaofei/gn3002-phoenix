@@ -2,10 +2,10 @@
 
 > 一台被厂商遗弃的 MT6735 手机，重新开机计划。
 
-厂商没了，OTA 服务器早关了，最后一版官方固件停在 Android 5.1。这台机器现在唯一的价值，
-就是它是一块 4 核 A53 + 720p 屏幕 + 完整的硬件资料（我们全扒出来了）的开发板。
+厂商没了，OTA 服务器早关了，最后一版官方固件停在 Android 5.1（2017-10-11）。
+这台机器现在唯一的价值，就是它是一块 4 核 A53 + 720p 屏 + 硬件资料被扒干净的开发板。
 
-**当前目标：Android 8.1。** 不是 5.1 重打包，是真的从源码编译出来的 LineageOS 15.1。
+**目标：Android 8.1（LineageOS 15.1），从源码编译，不是 5.1 重打包。**
 
 ---
 
@@ -13,271 +13,257 @@
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| M0 | 固件解剖、硬件档案、分区表 | ✅ 完成 |
-| M1 | TWRP 可启动、能挂载全部分区 | 🟡 CI 已产出镜像（15.5MB，装得进 16MB 分区），**待真机验证** |
-| M2 | LineageOS 15.1 首次开机（哪怕只有黑屏 + adb） | ⬜ 未开始 |
-| M3 | 显示 / 触摸 / WiFi / 音频 / 相机逐个点亮 | ⬜ 未开始 |
-| M4 | Android 9 试验 | ⬜ 未开始 |
+| M0 | 固件解剖、分区表、硬件档案 | ✅ 完成 |
+| M1 | TWRP 可启动、中文界面、能读 TF 卡 | ✅ 可用（13.9 MB，装进 16 MB 分区） |
+| M2a | LineageOS 15.1 编译出包 | ✅ `system.img` 3.0 GB(raw)，能刷进机器 |
+| M2b | **首次开机** | ❌ **卡在第一屏**，见下 |
+| M3 | 显示 / 触摸 / WiFi / 音频 / 相机 | ⬜ 未开始 |
+| M4 | Android 9 | ⬜ 未开始 |
 
-主线内核（Linux 6.x）的尝试已经归档，结论写在
-[GIONEE-GN3002-Mainline/docs/mainline-archive.md](https://github.com/Windy-Xiaofei/GIONEE-GN3002-Mainline/blob/main/docs/mainline-archive.md)：
-MT6735 的 PSCI 是坏的，没有 UART 可以看日志，只能得到一个单核、无网、不能待机的开发板。不值得。
+### 当前卡点：`/system` 从未挂载
+
+`/proc/last_kmsg` 里的确切症状：
+
+```
+init: [libfs_mgr]fs_mgr_read_fstab_dt(): failed to read fstab from dt
+init: /recovery not specified in fstab
+init: Couldn't load property file: /system/etc/prop.default: No such file
+init: do_start: Service logd not found
+```
+
+Android 8 的第一阶段挂载（`FirstStageMount`）**只从设备树的 `/firmware/android/fstab`
+节点读挂载表**。我们的 DTB 里没有这个节点，于是它认为「没有要挂的东西」直接返回，
+ramdisk 里的 `/fstab.mt6735` 一次都没被用过；`/system` 挂不上，
+`logd` / `servicemanager` / `vold` 的 rc 全在 `/system/etc/init` 里 → 全部 not found → 卡死。
+
+修复在 [`ci/patch-first-stage.py`](ci/patch-first-stage.py)，**尚未在真机验证**。
 
 ---
 
-## 硬件速查
+## 硬件
 
 | | |
 |---|---|
 | SoC | MT6735，4×Cortex-A53 @1.3GHz，Mali-T720 MP2 |
 | 代号 | `gbl7356`（原厂 `ro.product.device` = `GIONEE_GBL7356`） |
-| 屏幕 | 720×1280，天马 `tm_ft8606`（触摸一体），320dpi |
-| 内存/存储 | 2GB / 16GB eMMC，system 3GB |
+| 屏幕 | 720×1280，天马 `tm_ft8606`（触摸一体），320dpi，**BGR 排列** |
+| 内存/存储 | 2 GB / 16 GB eMMC，system 3 GB |
 | 用户空间 | 64 位（`zygote64_32`） |
-| 安全 | 有 ATF + trustzone，bootloader 已解锁 |
+| 内核 | 3.10.65，arm64，原厂 `Image.gz-dtb`，**不改** |
+| 安全 | ATF + trustzone，bootloader 已解锁 |
 | 相机 | 前 + 后，MTK legacy HAL1（`camera.mt6735.so`） |
 | 连接 | MTK WMT WiFi/BT combo、pn54x NFC、CCCI 双卡 LTE |
 
-关键偏移（全部来自原厂 boot.img header 实测）：
+### 内核加载地址（全部来自原厂 boot.img header 实测）
 
 ```
 kernel_addr   0x40080000   → base 0x40000000 + offset 0x00080000
 ramdisk_addr  0x44000000   → offset 0x04000000
 tags_addr     0x4e000000   → offset 0x0e000000
 page_size     2048
-cmdline       bootopt=64S3,32N2,64N2
 ```
 
-> `0x80000` 这个 offset 是整件事最容易翻车的地方。Android 默认给 `0x8000`，
-> 而 MT6735 前面 512KB 被 LK 和 ATF 占了。写错的表现是：刷完开机黑屏、几秒后自己复位、
-> 没有任何日志。别问怎么知道的。
+> `0x80000` 这个 offset 是最容易翻车的地方。Android 默认给 `0x8000`，
+> 而 MT6735 前面 512 KB 被 LK 和 ATF 占了。写错的表现：刷完开机黑屏、几秒后自己复位、
+> 没有任何日志。
 
 ---
 
-## 下载
+## 目录
 
-首个可刷镜像：**[twrp-0.1](https://github.com/Windy-Xiaofei/gn3002-phoenix/releases/tag/twrp-0.1)**
-
-```
-twrp-gbl7356.img   15,542,272 B
-sha256  c6651b382b0dbc12a44d2b3a69c3c46c45655b66621465268b35d2a8e0a8e68d
-```
-
-CI（[Actions](https://github.com/Windy-Xiaofei/gn3002-phoenix/actions)）每次推送 `.mk` / workflow 会自动构建，
-产物在 Artifacts（保留 30 天），发版时同步传到 Releases（长期保留）。
-
-镜像 header 已用脚本校验，与原厂 boot.img 实测值完全一致：
-
-```
-kernel_addr 0x40080000   ramdisk_addr 0x44000000
-tags_addr   0x4e000000   page_size 2048
-```
-
-> 内核用的是原厂 `Image.gz-dtb`，**一个字节都没改**。为了压进 16MB 分区，
-> 只裁掉了 TWRP 的可选组件（python3 及标准库、bash、tzdata、多语言包等），
-> 刷机、备份、挂载、adb、MTP 能力都在。
-
----
-
-## 目录说明
-
-仓库根目录**就是** device tree，由 `manifest/phoenix.xml` 里的
-`path="device/gionee/gbl7356"` 映射进源码树。所以 `BoardConfig.mk` 在顶层，
-而不是 `device/gionee/gbl7356/BoardConfig.mk`。
+仓库根目录**就是** device tree，由 `manifest/phoenix.xml` 的
+`path="device/gionee/gbl7356"` 映射进源码树。所以 `BoardConfig.mk` 在顶层。
 
 ```
 .
-├── BoardConfig.mk          # 分区表、内核地址、TWRP 参数
-├── AndroidProducts.mk      # lunch 目标注册
-├── omni_gbl7356.mk         # 产品定义（M1 TWRP 用）
-├── twrp.fstab              # 分区挂载表
-├── prebuilt/Image.gz-dtb   # 原厂内核（3.10.65 + DTB），6.9MB
-├── manifest/phoenix.xml    # local manifest
-└── .github/workflows/      # 云端构建
+├── BoardConfig.mk           板级配置（注释密度很高，每个坑都写在里面）
+├── device.mk                包、文件拷贝、HAL 变量
+├── lineage.mk               产品定义（必须叫这个名字，见下）
+├── AndroidProducts.mk       lunch 目标注册
+├── omni_gbl7356.mk          M1 TWRP 的产品定义
+├── twrp.fstab               TWRP 分区挂载表
+├── ci/                      ★ 三个构建期源码补丁（见「三个补丁」）
+├── blobs/                   233 个原厂闭源文件（86 MB）
+├── rootdir/                 init.mt6735.rc / ueventd.mt6735.rc / fstab.mt6735
+├── configs/                 audio_policy / media_codecs / thermal
+├── prebuilt/Image.gz-dtb    原厂内核，6,928,802 字节，一个字节没改
+├── manifest/phoenix.xml     local manifest
+├── tools/ci-patch-tree.sh   TWRP 构建时的源码级瘦身
+└── .github/workflows/       build-lineage.yml / build-twrp.yml
 ```
+
+---
+
+## 硬约束
+
+| 项 | 值 | 影响 |
+|---|---|---|
+| 内核 | 原厂 3.10.65，不改 | 只有 `Image.gz-dtb`，没源码树；所有内核限制都用源码补丁绕过 |
+| boot / recovery 分区 | 各 16 MB | boot 7.8 MB、recovery 13.9 MB |
+| system 分区 | 3 GB | raw 3.0 GB，**没有余量** |
+| userdata | 1.5 GB | 装不下 3 GB 卡刷包，只能 fastboot / SPFT / TWRP 刷镜像 |
+| vendor 分区 | 无 | 非 Treble，`TARGET_COPY_OUT_VENDOR=system/vendor` |
+| SELinux | 内核只支持策略 **15–29** | 8.1 默认 v30，必须 `POLICYVERS := 29` + libsepol 补丁 |
+| 内核 DTB | 无 `/firmware/android/fstab` | 第一阶段挂载会跳过，必须打补丁 |
+| 内核 | 无 devtmpfs、无 `mmap_rnd_bits` | `/dev` 靠 ueventd 建；init 硬化检查会 panic |
 
 ---
 
 ## 编译
 
-### 方式一：GitHub Actions（推荐）
-
-推一个 commit 就自动编，产物在 Actions 页面的 Artifacts 里。不用装 100GB 的工具链。
-
-```
-Actions → TWRP → Run workflow
-```
-
-### 方式二：本地
-
-需要 200GB 空闲磁盘、16GB 内存、Linux（WSL2 也行但慢）。
+### GitHub Actions（推荐）
 
 ```bash
-mkdir -p ~/phoenix && cd ~/phoenix
+# 全量（约 1 小时）
+gh workflow run "LineageOS 15.1" -R Windy-Xiaofei/gn3002-phoenix --ref main
 
-# TWRP 8.1 最小源码树
-repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni.git \
-          -b twrp-8.1 --depth=1
+# 只打 boot.img（约 10 分钟，调 ramdisk / cmdline 时用）
+gh workflow run "LineageOS 15.1" -R Windy-Xiaofei/gn3002-phoenix --ref main -f target=bootimage
+
+# 取产物
+gh run download <run-id> -R Windy-Xiaofei/gn3002-phoenix -n lineage-gbl7356-<n> -D out/boot
+```
+
+推送这些路径会自动触发：`device.mk`、`lineage.mk`、`AndroidProducts.mk`、
+`BoardConfig.mk`、`blobs/**`、`rootdir/**`、`configs/**`、`overlay/**`、`sepolicy/**`、
+本工作流文件。`concurrency` 是 `cancel-in-progress`，**推送会取消正在跑的那一轮**。
+
+### 本地
+
+需要 Ubuntu 20.04/22.04、≥120 GB 磁盘、≥16 GB 内存、JDK 8、python2.7。
+
+```bash
+repo init -u https://github.com/LineageOS/android.git -b lineage-15.1 --depth=1
 repo sync -c -j8 --force-sync --no-clone-bundle --no-tags
 
-# 放设备树
-git clone https://github.com/Windy-Xiaofei/gn3002-phoenix.git device/gionee/gbl7356
+# 三个补丁（顺序无所谓，必须在编译前）
+python3 ci/patch-libsepol.py     external/selinux/libsepol/src/write.c
+python3 ci/patch-init.py         system/core/init/init.cpp
+python3 ci/patch-first-stage.py  system/core/init/init_first_stage.cpp
 
+mkdir -p device/gionee/gbl7356
+rsync -a --exclude=.git ./ device/gionee/gbl7356/
+
+sudo ln -sf "$(command -v python2.7)" /usr/local/bin/python   # 8.1 脚本是 py2 语法
 source build/envsetup.sh
-export ALLOW_MISSING_DEPENDENCIES=true
+lunch lineage_gbl7356-userdebug
+mka bootimage -j$(nproc)
+```
+
+TWRP（M1）走另一套 manifest：
+
+```bash
+repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni.git \
+          -b twrp-8.1 --depth=1
 lunch omni_gbl7356-eng
 mka recoveryimage
 ```
 
-产物：`out/target/product/gbl7356/recovery.img`
+---
+
+## 三个补丁
+
+工作流在 `repo sync` 之后、编译之前执行。为什么需要它们，逐条写在 `BoardConfig.mk` 的注释里。
+
+### `ci/patch-libsepol.py`
+
+内核只认 SELinux 策略 15–29，8.1 默认 30。改成 `POLICYVERS := 29` 后
+`checkpolicy` 会拒绝写出，因为 8.1 策略用了 `ioctl` 扩展权限（v30 特性）：
+
+```
+libsepol.avtab_write_item: policy version 29 does not support ioctl extendedpermissions rules
+```
+
+补丁在写策略前把这些节点从 avtab 哈希桶摘掉并 `a->nel--`（不能简单 `return`，
+计数会错）。内核本来不支持这些规则，丢掉后策略依然自洽。
+
+### `ci/patch-init.py`
+
+3.10 没有 `/proc/sys/vm/mmap_rnd_bits`（Linux 4.1 才有），8.1 的
+`set_mmap_rnd_bits_action()` 写失败就 `security_failure()` → 重启进 bootloader。
+`set_kptr_restrict_action()` 同理。补丁把这两处降级成 `LOG(WARNING)`。
+
+### `ci/patch-first-stage.py`
+
+`FirstStageMount` 只从设备树读挂载表。补丁在 DT 缺失时回落到固定路径
+`/fstab.mt6735`、`/vendor/etc/fstab.mt6735`，并且**只把 `/system`、`/vendor`
+放进挂载队列**。
+
+> 两个坑：① 不能用 `fs_mgr_read_fstab_default()`，它依赖 `ro.hardware`，
+> 而 `FirstStageMount` 构造时属性区还没初始化（`DoFirstStageMount()` 在 main 第 47 行，
+> `property_init()` 在第 92 行），路径会拼成 `/fstab.`；
+> ② 队列里每一条都会被 `fs_mgr_do_mount_one()`，任何一条失败就让 init panic，
+> 所以 `/data`、`/cache` 这些不能放进去。
 
 ---
 
 ## 刷入
 
-**实测结论（2026-11-15）**：`fastboot flash recovery` 返回 `OKAY`，但进 recovery
-仍是原厂界面 —— 这台机 LK 的命令行 fastboot 看着成功、实际没落盘（用「搞机助手」
-才能可靠进 fastboot / recovery）。**改用 mtkclient 走 BROM 直写 eMMC**：
-不经过 LK、不需要 root、不需要 USB 调试授权。
+产物：`boot.img`（7.8 MB）、`recovery.img`（13.9 MB）、`system.img`（3.0 GB raw）。
 
-### 方式一：mtkclient（推荐）
-
-工具已装好：`mtkclient/`（独立 venv + `libusb-1.0.dll`），
-驱动包 `tools/UsbDk_1.0.22_x64.msi`。
-
-**图形界面（推荐）**：双击 `mtk-gui.bat`（已配好中文界面）。
-在「读取分区」页先把 `nvram/nvdata/protect1/protect2` 读出来备份；
-再到「写入分区」页点「选择输入目录」→ `mtk-write/`
-（里面只有 `recovery.bin`，因此只会勾上 recovery），
-**确认没有勾选其它分区**后点「写入分区」。
-连不上 BROM 时用界面上的「选择 Preloader」指定原厂 preloader。
-
-命令行：双击 `mtk-shell.bat` 进已配好环境的命令行：
-
-```bat
-python mtk.py printgpt
-python mtk.py r nvram,nvdata,protect1,protect2 nvram.img,nvdata.img,protect1.img,protect2.img
-python mtk.py w recovery "D:\GIONEE-GN3002\twrp-gbl7356.img"
-```
-
-BROM 进法：手机**完全关机**，按住音量上（或音量下）不放再插 USB。
-卡住时加 `--preloader D:\GIONEE-GN3002\work\stock\preloader_gionee6735_66t_l1.bin`，
-或换 `--stock` 走 MTK 原生 DA。Windows 侧若识别不到 `0E8D:0003`，
-用 Zadig 把该设备驱动换成 WinUSB。
-
-**只写 recovery，绝不写 preloader / lk / seccfg / pgpt。**
-`flash-twrp.bat` 是带确认的一键脚本，写死的也只有 recovery。
-
-### 方式二：fastboot flash（本次实测未生效，仅作记录）
-
-关机后按物理键组合进 fastboot（这台机 `adb reboot recovery` 不可靠，
-`adb reboot bootloader` 又需要 USB 调试授权）。进去后：
+### fastboot（改 boot 时最快）
 
 ```bash
-fastboot devices                       # 应看到 BM...  fastboot
-fastboot getvar unlocked                # 应为 yes
-fastboot flash recovery twrp-gbl7356.img
+fastboot devices
+fastboot flash boot boot.img
+fastboot reboot
 ```
 
-命令返回（2026-11-15）：
+成功失败都会明确报出来，比 SP Flash Tool 的静默失败好定位。
 
-```
-Sending 'recovery' (15178 KB)   OKAY [  1.452s]
-Writing  'recovery'             OKAY [  0.354s]
-```
+### SP Flash Tool（整包）
 
-但随后进 recovery **仍是原厂界面**，说明 LK 回的 OKAY 不等于真的写进 eMMC。
-不确定是 LK 的 flash 实现有缓存/校验回退，还是进 recovery 的路径另有玄机；
-总之**不要信任这条路的返回值**，写完后必须回读校验。
+关机 → 加载 scatter（只勾 boot / recovery / system）→ **Download Only** →
+Start → **然后才插线**。
 
-> 「LK 误报低电量」那条记录只发生在 **`fastboot boot`**（内存启动走 download
-> 路径，报 `low power, need battery charging`，即使电池 98%）。
-> `fastboot flash` 不报低电量、`getvar all` 也正常，bootloader 已解锁
-> （`unlocked: yes` / `secure: no`）—— 但依然没生效。
+> **永远不要刷 preloader、lk、nvram、protect1/2**。sparse 格式的 `system.img`
+> SPFT 不认，必须先转 raw。
 
-### 方式三：adb + dd（需要 root）
+### TWRP（只有 TF 卡时）
 
-原厂 5.1 默认没 root，所以这条路在刚刷完原厂包时**用不了**。
-但在 TWRP 里 adbd 本身就是 root，或者系统已 root 时可用：
+TWRP → 安装 → **安装镜像** → 选 `system.img` → 目标 **System Image**；
+再选 `boot.img` → 目标 **Boot**。最后 **格式化 Data**（不是「清除 Data」，
+后者是文件级删除，5.1 的加密分区挂不上就必然失败）。
 
-```bash
-adb start-server
-adb devices                      # 确认 online 且 shell 是 uid=0
-adb push twrp-gbl7356.img /sdcard/twrp.img
-adb shell 'dd if=/sdcard/twrp.img of=/dev/block/platform/mtk-msdc.0/by-name/recovery bs=1048576'
-adb shell 'sync; md5sum /dev/block/platform/mtk-msdc.0/by-name/recovery'
-```
+### 一个历史坑：原厂恢复自恢复
 
-`by-name/recovery` 对应 `mmcblk0p8`（16MB），`by-name/boot` 是 `mmcblk0p7`。
-**写错分区就会变砖**，dd 之前先用
-`adb shell ls -l /dev/block/platform/mtk-msdc.0/by-name/` 确认。
+原厂 `init.rc` 里有 `service flash_recovery /system/bin/install-recovery.sh`，
+每次正常开机都会校验 recovery 分区 SHA1，不是原厂就用 `boot` +
+`/system/recovery-from-boot.p` 把原厂 recovery 写回去。
+所以在只刷 recovery、没刷 system 的阶段，「刷成功、进系统后又被还原」是这个机制。
+刷了 8.1 的 system.img 之后这些脚本就不存在了。
 
-### 刷完必做：禁用原厂 recovery 自恢复
+---
 
-**这是「刷成功、重启又变回原厂」的真正原因。** 原厂 `init.rc` 里有：
+## 已知问题
 
-```
-service flash_recovery /system/bin/install-recovery.sh
-    class main
-    oneshot
-```
-
-每次正常开机进 Android 都会跑一次。`install-recovery.sh` 先用
-`applypatch -c EMMC:recovery:8953856:dea2c1d0…` 校验分区 SHA1，
-不是原厂就用 `boot` 分区 + `/system/recovery-from-boot.p`（450KB patch）
-把原厂 recovery 重新写回，最后 `applysig` 补签名。
-所以 fastboot / mtkclient 都刷成功了，一进系统就被还原。
-
-正确顺序：
-
-1. 用 mtkclient 刷完 TWRP 后**不要进系统**，直接按物理键进 recovery
-   （mtkclient 写完会 reset，刷完瞬间就按住进 recovery 的组合键）。
-2. 确认 TWRP 起来后，挂载 System，把这两个文件改名（可恢复）：
-
-```bash
-adb shell id                       # TWRP 里 adbd 是 uid=0
-adb shell mount /system
-adb shell mv /system/bin/install-recovery.sh /system/bin/install-recovery.sh.bak
-adb shell mv /system/recovery-from-boot.p /system/recovery-from-boot.p.bak
-adb shell sync
-```
-
-Windows 下可直接双击 `disable-recovery-restore.bat`（会自动等 adb、
-改名后列出结果）。之后正常重启进 Android 也不会再被还原。
-
-> 如果刷完**不进系统、直接进 recovery 仍是原厂界面**，那就不是这个机制，
-> 需要另查 LK 的 `applysig` 签名校验是否拦了未签名 recovery。
-
-### 备份 IMEI 分区
-
-刷 recovery 不会动到这几个分区，但**开始刷 system 之前务必**备份
-`nvram`、`nvdata`、`protect1`、`protect2` —— 丢了 IMEI 就没了。
-原厂系统没 root 时读不了块设备，最方便的是刷好 TWRP 后在 TWRP 里做：
-
-```bash
-adb shell 'dd if=/dev/block/platform/mtk-msdc.0/by-name/nvram of=/sdcard/nvram.img'
-adb shell 'dd if=/dev/block/platform/mtk-msdc.0/by-name/nvdata of=/sdcard/nvdata.img'
-adb pull /sdcard/nvram.img /sdcard/nvdata.img ./
-```
-
-或者用 SP Flash Tool 的 Readback 功能。
-
-救援手段：SP Flash Tool + 原厂固件包（`gionee-gn3002_SV1.0_5.1_2017.10.11`），
-走 Download Only 模式，只勾 preloader 以外的分区。**永远不要刷 preloader 和 lk**，那是唯一的救砖通道。
+| 问题 | 状态 |
+|---|---|
+| `/system` 不挂载 | 补丁已写，待验证 |
+| TWRP 在 SELinux enforcing 下权限不足（不能格式化 /data） | 未解决。原厂 5.1 的 init 是 user 版，`write /sys/fs/selinux/enforce 0` 被策略拒 |
+| 电池 / 温度读数不准 | 未解决，低优先级。诊断钩子已在 `sbin/sysprobe.sh` |
+| `sdcardfs` / `memfd_create` 缺失 | 未验证，可能要动内核 |
+| camera1 → camera3、RIL v6 → v11 | 未开始 |
 
 ---
 
 ## 警告
 
-这是一个自用项目，不是发行版。没有 OTA，没有签名，没有质量保证。
+自用项目，不是发行版。没有 OTA，没有签名，没有质量保证。
 你的机器可能变砖，虽然目前每次都能救回来。
 
-刷机前请确认你手上有原厂固件包和一根能用的数据线。
+刷机前请确认手上有原厂固件包和一根能用的数据线。
 
 ---
 
 ## 致谢
 
-- [Coolpad mt6735-common](https://github.com/coolpadnote3litedevelopment/android_device_coolpad_mt6735-common) — MT6735 设备树的事实标准，本项目的 BoardConfig 大量参考
+- [Coolpad mt6735-common](https://github.com/coolpadnote3litedevelopment/android_device_coolpad_mt6735-common)
+  — MT6735 设备树的事实标准，本项目的 BoardConfig 大量参考
 - TWRP minimal manifest
 - 以及那台 2016 年出厂、至今还在服役的 GN3002
+
+## License
+
+Apache-2.0，见 [LICENSE](LICENSE)。
+`blobs/` 下的闭源二进制来自原厂固件，版权归各自权利人，仅用于让这台机器重新开机。

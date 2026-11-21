@@ -233,10 +233,3 @@ ANDROID_COMPILE_WITH_JACK := false
 # 里摘掉，其余规则（init_exec、域切换、属性标签）原样保留。
 # 见 .github/workflows/build-lineage.yml 的 "Patch libsepol for v29"。
 POLICYVERS := 29
-
-# ==============================================================================
-# 调试：userdebug 下默认打开 adb
-# ==============================================================================
-# 系统起不来时最需要的是 logcat。默认 persist.sys.usb.config 是 none，
-# 即使 zygote 起来了 adbd 也不会拉 USB 配置，只能靠屏幕猜。
-ADDITIONAL_DEFAULT_PROPERTIES += persist.sys.usb.config=adb
