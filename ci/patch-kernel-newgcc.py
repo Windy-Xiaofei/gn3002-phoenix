@@ -82,14 +82,30 @@ def patch_top_makefile(kdir):
         print('  顶层 Makefile 已处理，跳过')
         return
 
-    # 找一个稳定的锚点：3.10 顶层 Makefile 里有一句
-    #   KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes ...
-    # 注意 := 前面可能有多个空格，要用 \s* 而不是固定空格。
-    m = re.search(r'^KBUILD_CFLAGS\s*:=.*$', s, re.M)
+    # 锚点：3.10 顶层 Makefile 里 KBUILD_CFLAGS 的第一个赋值，是**续行块**：
+    #   KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
+    #                      -fno-strict-aliasing -fno-common \
+    #                      ... (若干续行) ...
+    #
+    # 关键：必须整块匹配到"最后一行不带反斜杠"为止。插在块中间的话，后面
+    # 那些缩进的续行会变成孤立的 recipe 行，make 报
+    #   Makefile:387: *** recipe commences before first target.  Stop.
+    # 用正则一次吃掉整块：(行尾带 \ 的若干行) + (一行不带 \ 的结尾行)。
+    m = re.search(
+        r'^KBUILD_CFLAGS\s*:=.*?(?<!\\)\n',
+        s, re.M | re.S)
     if not m:
         sys.exit('顶层 Makefile 里没找到 KBUILD_CFLAGS，结构变了？')
+    # 上面的惰性匹配可能只吃到第一行，再往后吃掉所有续行
+    end = m.end()
+    while s[:end].rstrip('\r\n').endswith('\\'):
+        nl = s.find('\n', end)
+        if nl < 0:
+            break
+        end = nl + 1
+    insert_at = end
 
-    inject = m.group(0) + '''
+    inject = '''
 # --- GN3002_NEW_GCC_COMPAT ------------------------------------------------
 # 3.10 是 2016 年的代码，GCC 10+ 编不过。三处都是编译器换代带来的：
 #   1. -fno-common 成了默认，多个 .c 里的同名全局变量变成 multiple
@@ -104,7 +120,8 @@ KBUILD_CFLAGS   += -Wno-error=stringop-overflow -Wno-error=stringop-overread
 HOSTCFLAGS      += -fcommon
 # -------------------------------------------------------------------------
 '''
-    s = s.replace(m.group(0), inject, 1)
+
+    s = s[:insert_at] + inject + s[insert_at:]
     open(p, 'w', encoding='utf-8', newline='\n').write(s)
     print('  顶层 Makefile 已加 -fcommon 与告警降级')
 
