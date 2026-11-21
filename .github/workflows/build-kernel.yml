@@ -46,7 +46,8 @@ jobs:
   smoke:
     if: github.event.inputs.mode != 'full'
     runs-on: ubuntu-22.04
-    timeout-minutes: 90
+    # 用 MTK 的 defconfig 编全量内核要 30~40 分钟，留足余量
+    timeout-minutes: 120
 
     steps:
       - name: Checkout device tree
@@ -113,33 +114,45 @@ jobs:
           cd kernel
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
-          # qemu 只用 virt 平台，不需要 MTK 那一堆外设驱动。
-          # 用 defconfig 打底 + 打开我们关心的几项，编译量小很多。
-          make defconfig
+
+          # 用 MTK 自己的 sf6735_65c_l1_defconfig，**不要用 defconfig**。
+          #
+          # 踩过的坑：一开始想"qemu 只要 virt 平台，用 defconfig 编得少"，
+          # 结果 defconfig 编过了所有 .c，链接时炸出一堆 undefined reference：
+          #   undefined reference to `mt_trace_hrt_end'
+          #   undefined reference to `mt_trace_ISR_start'
+          #   undefined reference to `notify_time_update'
+          #   undefined reference to `aee_kernel_warning_api'
+          #   undefined reference to `rtc_set_alarm_poweron'
+          # 这些都是 MTK 私有符号，散在 drivers/misc/mediatek/ 下面，
+          # 只有 MTK 那份 defconfig 才会把它们编进来。这棵源码树是
+          # "通用内核 + MTK 补丁"的混合体，脱离 MTK 配置就不自洽。
+          #
+          # 用 sf6735_65c_l1_defconfig 之后，编译量确实更大，但能真的链接出
+          # vmlinux —— 冒烟测试要验证的就是"这个补丁能不能产出可启动的内核"，
+          # 用一份编不出内核的配置去测毫无意义。
+          make sf6735_65c_l1_defconfig
+
+          # 只叠增强 qemu 可启动性的几项（virt 平台的串口 + devtmpfs），
+          # 以及 binder 的目标状态。其余保持 MTK 原样。
           ./scripts/config \
-            --enable CONFIG_ANDROID_BINDER_IPC \
-            --enable CONFIG_ANDROID_BINDER_DEBUG \
-            --enable CONFIG_DEVTMPFS \
-            --enable CONFIG_DEVTMPFS_MOUNT \
-            --enable CONFIG_BLK_DEV_INITRD \
-            --enable CONFIG_SERIAL_AMBA_PL011 \
-            --enable CONFIG_SERIAL_AMBA_PL011_CONSOLE \
+            --enable  CONFIG_ANDROID \
+            --enable  CONFIG_ANDROID_BINDER_IPC \
+            --enable  CONFIG_ANDROID_BINDER_DEBUG \
             --disable CONFIG_ANDROID_BINDER_IPC_32BIT \
-            --disable CONFIG_RT_GROUP_SCHED \
-            --enable CONFIG_BINFMT_ELF || true
+            --enable  CONFIG_DEVTMPFS \
+            --enable  CONFIG_DEVTMPFS_MOUNT \
+            --enable  CONFIG_BLK_DEV_INITRD \
+            --enable  CONFIG_SERIAL_AMBA_PL011 \
+            --enable  CONFIG_SERIAL_AMBA_PL011_CONSOLE || true
+
           make olddefconfig
 
-          # RT_GROUP_SCHED 必须真的关掉：MTK 在 kernel/sched/rt.c 里加了段
-          # 调试代码引用 rt_rq->rq，而这个字段上游早就删了，只在
-          # CONFIG_RT_GROUP_SCHED=y 时才编到。scripts/config --disable 有时
-          # 会被 Kconfig 的 select 又拉回来，所以这里再硬删一次并复查。
-          sed -i 's/^CONFIG_RT_GROUP_SCHED=y/# CONFIG_RT_GROUP_SCHED is not set/' .config || true
-          make olddefconfig
-          if grep -q '^CONFIG_RT_GROUP_SCHED=y' .config; then
-            echo "警告: RT_GROUP_SCHED 仍为 y，会编到 MTK 的坏代码"
+          echo "===== 关键配置 ====="
+          grep -E "CONFIG_ANDROID_BINDER|CONFIG_DEVTMPFS|CONFIG_BLK_DEV_INITRD|CONFIG_SERIAL_AMBA_PL011" .config | sort
+          if grep -q '^CONFIG_ANDROID_BINDER_IPC_32BIT=y' .config; then
+            echo "FATAL: 32 位 binder 协议"; exit 1
           fi
-
-          grep -E "BINDER|DEVTMPFS|INITRD|RT_GROUP" .config | head -10
 
       - name: Build kernel (smoke)
         run: |
