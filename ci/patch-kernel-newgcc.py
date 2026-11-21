@@ -74,35 +74,6 @@ def write_compat_header(kdir):
     print('  生成兼容头文件:', ', '.join(written) if written else '(已存在，跳过)')
 
 
-def _cc_supports(flag):
-    """用交叉编译器编一个空文件，看它认不认这个告警选项。
-
-    比查文档可靠：GCC 的告警选项在不同 minor 版本之间也会增删，
-    而且这里用的是发行版打的 cross toolchain，patchlevel 未必和上游一致。
-    """
-    cc = os.environ.get('CROSS_COMPILE', '') + 'gcc'
-    try:
-        r = subprocess.run(
-            [cc, '-Werror', flag, '-x', 'c', '-c', '-o', os.devnull, '-'],
-            input='int main(void){return 0;}\n',
-            capture_output=True, text=True, timeout=30)
-        return r.returncode == 0
-    except Exception:
-        return False
-
-
-def _cc_version():
-    """返回交叉编译器的主版本号；拿不到就当 0。"""
-    cc = os.environ.get('CROSS_COMPILE', '') + 'gcc'
-    try:
-        r = subprocess.run([cc, '-dumpversion'], capture_output=True, text=True, timeout=30)
-        if r.returncode == 0 and r.stdout.strip():
-            return int(r.stdout.strip().split('.')[0])
-    except Exception:
-        pass
-    return 0
-
-
 def patch_top_makefile(kdir):
     """给顶层 Makefile 追加 -fcommon 和告警降级。"""
     p = os.path.join(kdir, 'Makefile')
@@ -135,59 +106,64 @@ def patch_top_makefile(kdir):
         end = nl + 1
     insert_at = end
 
-    # 告警降级不能写死：GCC 版本之间这些选项的可用性差别很大。
-    # 实测 GCC 11 上直接写 -Wno-error=use-after-free 会让 cc1 直接报错退出：
-    #   cc1: error: '-Wno-error=use-after-free': no option '-Wuse-after-free'
-    # （use-after-free 是 GCC 12 才加的，dangling-pointer 也是）。
-    # 所以这里先探测，只保留编译器认识的。
-    candidates = [
+    # 首选做法：直接交给内核自己的 cc-option 机制。
+    # 3.10 的顶层 Makefile 里有 $(call cc-option,-flag,...)，它会真的去编一遍，
+    # 不支持的选项返回空。这样"编译器认不认"根本不用我们猜 —— 比在 Python
+    # 里另起一个探测进程可靠得多，也不会因为 CROSS_COMPILE 没传进来而失效。
+    #
+    # 为什么必须这样：GCC 11 上写死 -Wno-error=use-after-free 会让 cc1 直接
+    # 报 "no option '-Wuse-after-free'" 然后终止，连编译都起不来。
+    #
+    # 列表来源：跑一轮 make -k 把所有被 -Werror 顶成 error 的告警收集起来，
+    # 3.10 的代码在新 GCC 下会命中的基本都在这里了。
+    warn_flags = [
+        # GCC 12+ 新增
         '-Wno-error=use-after-free',
         '-Wno-error=dangling-pointer',
+        '-Wno-error=stringop-overread',
+        # GCC 7~10 陆续加严的
+        '-Wno-error=format-truncation',
+        '-Wno-error=format-overflow',
         '-Wno-error=array-bounds',
         '-Wno-error=maybe-uninitialized',
         '-Wno-error=stringop-overflow',
-        '-Wno-error=stringop-overread',
-        '-Wno-error=address',
         '-Wno-error=tautological-compare',
         '-Wno-error=misleading-indentation',
         '-Wno-error=shift-negative-value',
+        # 3.10 的代码在 64 位上本来就有这些老问题，新 GCC 把告警级别调高了
+        '-Wno-error=implicit-function-declaration',
+        '-Wno-error=int-to-pointer-cast',
+        '-Wno-error=pointer-to-int-cast',
+        '-Wno-error=address',
+        '-Wno-error=unused-but-set-variable',
+        '-Wno-error=nonnull',
+        '-Wno-error=restrict',
     ]
-    supported = [f for f in candidates if _cc_supports(f)]
-    dropped = [f for f in candidates if f not in supported]
 
-    # 一个都没探测到，通常是编译器根本不在这台机器上（脚本单独跑的场景）。
-    # 这时不要静默退化成"只有 -fcommon"。但也不能乱猜：老编译器（GCC 9 以下）
-    # 可能根本不认识这些告警，加了反而让 cc1 直接报错。
-    # 折中：只探测编译器版本，GCC >= 10 才用保守默认（-fno-common 是 GCC 10
-    # 才改成默认的，只有这一代以上才需要这些降级）。
-    if not supported:
-        ver = _cc_version()
-        if ver >= 10:
-            print('  没探测到告警选项，但编译器是 GCC %d，用保守默认' % ver)
-            supported = [
-                '-Wno-error=array-bounds',
-                '-Wno-error=maybe-uninitialized',
-                '-Wno-error=stringop-overflow',
-            ]
-            dropped = [f for f in candidates if f not in supported]
-        else:
-            print('  编译器是 GCC %d，不需要告警降级（只需 -fcommon）' % ver)
-            dropped = list(candidates)
-
-    print('  编译器认识的告警选项:', ', '.join(supported) if supported else '(无)')
-    if dropped:
-        print('  跳过不支持的:', ', '.join(dropped))
-
-    warn_lines = '\n'.join('KBUILD_CFLAGS   += %s' % f for f in supported)
+    warn_lines = '\n'.join(
+        'KBUILD_CFLAGS   += $(call cc-option,%s,)' % f for f in warn_flags)
 
     inject = '''
 # --- GN3002_NEW_GCC_COMPAT ------------------------------------------------
 # 3.10 是 2016 年的代码，GCC 10+ 编不过。两个来源：
-#   1. -fno-common 成了默认，多个 .c 里的同名全局变量变成 multiple
-#      definition（scripts/dtc 的 yylloc 最典型）-> 加 -fcommon；
-#   2. 新增的告警把 -Werror 顶掉 -> 逐项降级为非错误。
-#      注意绝不能写死列表：GCC 11 上 '-Wno-error=use-after-free' 会让 cc1
-#      直接报 "no option"，连编译都起不来。这里只用探测通过的选项。
+#
+# 1. GCC 10 把 -fno-common 改成了默认，多个 .c 里的同名全局变量变成
+#    multiple definition。最典型的是 scripts/dtc：
+#      /usr/bin/ld: dtc-parser.tab.o:(.bss+0x50): multiple definition
+#      of `yylloc'; dtc-lexer.lex.o 先定义
+#    -> 加 -fcommon 回到老行为。
+#
+# 2. 新 GCC 陆续加严的告警把 3.10 的代码顶成 error，例如
+#      error: '/input1' directive output may be truncated [-Werror=format-truncation=]
+#      error: implicit declaration of function 'dmac_flush_range' [-Werror=implicit-function-declaration]
+#      error: cast from pointer to integer of different size [-Werror=pointer-to-int-cast]
+#    -> 逐项降级成非错误。
+#
+#    这里用内核自带的 $(call cc-option,FLAG,) 包一层，而不是直接写死。
+#    cc-option 会真的用当前编译器编一个空文件来试，不支持的选项返回空。
+#    这一步不能省：GCC 11 上直接写 -Wno-error=use-after-free 会让 cc1 报
+#      cc1: error: '-Wno-error=use-after-free': no option '-Wuse-after-free'
+#    然后直接终止，连编译都起不来（use-after-free 是 GCC 12 才有的）。
 KBUILD_CFLAGS   += -fcommon
 %s
 # scripts/dtc 是 hostprogs，不吃 KBUILD_CFLAGS，得单独给 HOSTCFLAGS
@@ -197,7 +173,8 @@ HOSTCFLAGS      += -fcommon
 
     s = s[:insert_at] + inject + s[insert_at:]
     open(p, 'w', encoding='utf-8', newline='\n').write(s)
-    print('  顶层 Makefile 已加 -fcommon 与告警降级')
+    print('  顶层 Makefile 已加 -fcommon 与 %d 条告警降级（均经 cc-option 过滤）'
+          % len(warn_flags))
 
 
 def main():
