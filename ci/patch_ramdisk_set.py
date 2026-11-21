@@ -70,6 +70,23 @@ def main():
     gz = gzip.compress(nc, 9)
     struct.pack_into('<I', header, 16, len(gz))
 
+    # 重算头部的 id（SHA1），算法同 mkbootimg：
+    #   sha1(kernel || len(kernel) || ramdisk || len(ramdisk)
+    #        || second || len(second) || extra_cmdline)
+    # 改了 ramdisk 而不更新它，部分 bootloader 会认为镜像损坏直接拒绝启动。
+    import hashlib
+    extra = bytes(d[608:608 + 1024]).split(b'\x00')[0]
+    sha = hashlib.sha1()
+    sha.update(kernel)
+    sha.update(struct.pack('<I', len(kernel)))
+    sha.update(gz)
+    sha.update(struct.pack('<I', len(gz)))
+    sha.update(second)
+    sha.update(struct.pack('<I', len(second)))
+    sha.update(extra)
+    header[576:596] = sha.digest()
+    header[596:608] = b'\x00' * 12
+
     buf = bytearray()
     buf += header
     buf += kernel
