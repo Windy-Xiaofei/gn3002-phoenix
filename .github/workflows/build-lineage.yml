@@ -118,6 +118,12 @@ jobs:
         run: |
           python3 dt/ci/patch-libsepol.py rom/external/selinux/libsepol/src/write.c
 
+      # 3.10 内核没有 /proc/sys/vm/mmap_rnd_bits，8.1 的 init 写不进去就
+      # security_failure() → panic。把这两处硬化检查降级成警告。
+      - name: Patch init for old kernel
+        run: |
+          python3 dt/ci/patch-init.py rom/system/core/init/init.cpp
+
       - name: Place device tree
         run: |
           mkdir -p rom/device/gionee/gbl7356
