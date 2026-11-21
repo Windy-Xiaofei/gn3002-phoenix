@@ -128,6 +128,17 @@ jobs:
             --disable CONFIG_RT_GROUP_SCHED \
             --enable CONFIG_BINFMT_ELF || true
           make olddefconfig
+
+          # RT_GROUP_SCHED 必须真的关掉：MTK 在 kernel/sched/rt.c 里加了段
+          # 调试代码引用 rt_rq->rq，而这个字段上游早就删了，只在
+          # CONFIG_RT_GROUP_SCHED=y 时才编到。scripts/config --disable 有时
+          # 会被 Kconfig 的 select 又拉回来，所以这里再硬删一次并复查。
+          sed -i 's/^CONFIG_RT_GROUP_SCHED=y/# CONFIG_RT_GROUP_SCHED is not set/' .config || true
+          make olddefconfig
+          if grep -q '^CONFIG_RT_GROUP_SCHED=y' .config; then
+            echo "警告: RT_GROUP_SCHED 仍为 y，会编到 MTK 的坏代码"
+          fi
+
           grep -E "BINDER|DEVTMPFS|INITRD|RT_GROUP" .config | head -10
 
       - name: Build kernel (smoke)

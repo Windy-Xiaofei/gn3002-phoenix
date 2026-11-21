@@ -115,6 +115,45 @@ def link_mach_headers(kdir):
         shutil.copytree(real_target, link)
 
 
+def fix_alarmtimer(kdir):
+    """修 kernel/time/alarmtimer.c 里 MTK 注释掉声明却还留着使用的地方。
+
+    MTK 把这三行注释掉了（含 rtctimer 的声明与启动）：
+        /* rtc_timer_cancel(alarm_rtc_dev, &rtctimer);
+           now = rtc_tm_to_ktime(alm.time);
+           rtc_timer_start(alarm_rtc_dev, &rtctimer, now, ktime_set(0, 0)); */
+    但紧接着的 rtc_timer_cancel(alarm_rtc_dev, &rtctimer) 没注释，
+    于是 rtctimer 未声明：
+
+        kernel/time/alarmtimer.c:177:42: error: 'rtctimer' undeclared
+
+    这是源码自己的 bug，不是编译器换代导致的，-Wno-error 救不了。
+    处理：把那一行也一并注释掉（保留 MTK 原本的意图）。
+    """
+    p = os.path.join(kdir, 'kernel', 'time', 'alarmtimer.c')
+    if not os.path.exists(p):
+        print('  警告: 找不到 %s，跳过' % p)
+        return
+    s = open(p, encoding='utf-8', errors='replace').read()
+
+    if 'GN3002_FIXED_RTCTIMER' in s:
+        print('  alarmtimer 已修过，跳过')
+        return
+
+    bad = '\trtc_timer_cancel(alarm_rtc_dev, &rtctimer);\n\trtc_set_alarm(alarm_rtc_dev, &alm);'
+    if bad not in s:
+        print('  警告: alarmtimer.c 里没找到预期的片段，跳过')
+        return
+
+    good = ('\t/* GN3002_FIXED_RTCTIMER: MTK 把 rtctimer 的声明注释掉了，\n'
+            '\t * 这一行却留着用，必然 rtctimer undeclared。一并注掉。 */\n'
+            '\t/* rtc_timer_cancel(alarm_rtc_dev, &rtctimer); */\n'
+            '\trtc_set_alarm(alarm_rtc_dev, &alm);')
+    s = s.replace(bad, good, 1)
+    open(p, 'w', encoding='utf-8', newline='\n').write(s)
+    print('  已修 alarmtimer.c 的 rtctimer 未声明')
+
+
 def patch_top_makefile(kdir):
     """给顶层 Makefile 追加 -fcommon 和告警降级。"""
     p = os.path.join(kdir, 'Makefile')
@@ -225,6 +264,7 @@ def main():
     kdir = sys.argv[1]
     write_compat_header(kdir)
     link_mach_headers(kdir)
+    fix_alarmtimer(kdir)
     patch_top_makefile(kdir)
     print('完成: 3.10 内核已适配现代 GCC')
 
