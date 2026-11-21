@@ -200,22 +200,32 @@ BOARD_ROOT_EXTRA_FOLDERS := \
 TARGET_KERNEL_ARCH := arm64
 
 # ==============================================================================
-# Java 编译：关掉 Jack
+# Java 编译：7.1 必须用 Jack
 # ==============================================================================
-# build/core/clear_vars.mk 会把每个 Java 模块的 LOCAL_JACK_ENABLED 预置成
-# DEFAULT_JACK_ENABLED，而 config.mk 在 ANDROID_COMPILE_WITH_JACK=true 时
-# 把它设成 full。于是整棵树的 Java 模块都挂着 `| setup-jack-server` 这个
-# order-only 依赖，构建一上来就得先起 Jack 服务。
+# 这一点和 8.1 相反，别搞混：
 #
-# jack-admin 起服务用的是 TLSv1 + 自签 JKS，现在的 Temurin 8 已经把旧协议和
-# 弱算法禁掉了，服务端每次都在握手里死掉：
+#   8.1：Jack 已被废弃，官方路线是 javac + dx。
+#        所以那边设 ANDROID_COMPILE_WITH_JACK := false，让 setup-jack-server
+#        从依赖图里消失。
+#
+#   7.1：Jack 还是主线。build/core/java.mk 里，生成
+#        $(intermediates)/with-local/classes.dex 的规则**只在 Jack 分支**：
+#           第 729 行  $(built_dex_intermediate): $(jack_all_deps) | setup-jack-server
+#        而 ifndef LOCAL_JACK_ENABLED 那段（第 463~619 行）只设置了
+#        PRIVATE_INTERMEDIATES_DIR / PRIVATE_DX_FLAGS，**没有任何生成规则**。
+#        所以关掉 Jack 之后，每个 Java 模块都会报：
+#           ninja: error: '.../APPS/BasicDreams_intermediates/with-local/classes.dex',
+#           needed by '.../APPS/BasicDreams_intermediates/classes.dex',
+#           missing and no known rule to make it
+#        首轮全量构建（run 44908501825）就是挂在这里。
+#
+# Jack 在新 JDK 上会起不来，但那是 TLS 握手问题，不是不能用：
 #   Jack server failed to (re)start
 #   SSL error when connecting to the Jack server
-# 而且 Jack 在 8.0 就已经被 AOSP 废弃，官方路线是 javac + dx。
-#
-# 注意：7.1 时代 Jack **还是官方主线**，所以关掉它更要紧 ——
-# 不关的话在 7.1 上更容易踩到。
-ANDROID_COMPILE_WITH_JACK := false
+# jack-admin 的服务端用 TLSv1 + 自签 JKS，而 Temurin 8u331 之后默认禁了
+# TLSv1。CI 里会先改 jdk.tls.disabledAlgorithms 把它放开，
+# 再给 server 足够的堆内存（规则见 build-lineage141.yml）。
+ANDROID_COMPILE_WITH_JACK := true
 
 # ==============================================================================
 # SELinux
