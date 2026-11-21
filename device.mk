@@ -191,8 +191,11 @@ PRODUCT_PROPERTY_OVERRIDES += \
 # 系统起不来时最需要的是 logcat。8.1 默认 persist.sys.usb.config=none，
 # 即使 adbd 起来了也不会去拉 USB 配置，调试只能靠屏幕猜。
 #
-# 注意：这个变量只能在产品配置文件里设置。main.mk:105 有一道校验，
-# 在 config.mk（内含 BoardConfig.mk）之后、导入产品配置之前，如果发现它
-# 已经被赋值就直接报错：
+# 注意不能用 ADDITIONAL_DEFAULT_PROPERTIES：envsetup.mk:208 在 include
+# BoardConfig 之前就把产品配置读完，所以设备树里任何位置设置它都会撞上
+# main.mk:105 的校验：
 #     ADDITIONAL_DEFAULT_PROPERTIES must not be set before here
-ADDITIONAL_DEFAULT_PROPERTIES += persist.sys.usb.config=adb
+# 8.1 也没有 PRODUCT_DEFAULT_PROPERTY_OVERRIDES（Android 9 才有）。
+# 走 build.prop 这条路：persist.* 属性开机时会被读进属性服务，一样生效。
+PRODUCT_PROPERTY_OVERRIDES += \
+    persist.sys.usb.config=adb
