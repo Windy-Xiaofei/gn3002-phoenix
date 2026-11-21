@@ -103,6 +103,9 @@ jobs:
         run: |
           # 3.10 遇上 GCC 11：缺 compiler-gcc11.h，且 GCC 10+ 默认 -fno-common
           # 会让 scripts/dtc 的 yylloc 变成 multiple definition。
+          # 这个脚本会用 CROSS_COMPILE 去探测哪些告警选项真的可用，
+          # 所以要先把交叉编译器告诉它。
+          export CROSS_COMPILE=aarch64-linux-gnu-
           python3 dt/ci/patch-kernel-newgcc.py kernel
 
       - name: Configure kernel (smoke)
@@ -303,6 +306,8 @@ jobs:
 
       - name: Patch kernel for modern GCC
         run: |
+          # 同上：用 CROSS_COMPILE 探测可用的告警选项。
+          export CROSS_COMPILE=aarch64-linux-gnu-
           python3 dt/ci/patch-kernel-newgcc.py kernel
 
       - name: Configure kernel

@@ -36,6 +36,7 @@ Ubuntu 22.04 的 aarch64-linux-gnu-gcc 是 11.4，直接编 3.10 会撞两个墙
 """
 import os
 import re
+import subprocess
 import sys
 
 
@@ -73,6 +74,35 @@ def write_compat_header(kdir):
     print('  生成兼容头文件:', ', '.join(written) if written else '(已存在，跳过)')
 
 
+def _cc_supports(flag):
+    """用交叉编译器编一个空文件，看它认不认这个告警选项。
+
+    比查文档可靠：GCC 的告警选项在不同 minor 版本之间也会增删，
+    而且这里用的是发行版打的 cross toolchain，patchlevel 未必和上游一致。
+    """
+    cc = os.environ.get('CROSS_COMPILE', '') + 'gcc'
+    try:
+        r = subprocess.run(
+            [cc, '-Werror', flag, '-x', 'c', '-c', '-o', os.devnull, '-'],
+            input='int main(void){return 0;}\n',
+            capture_output=True, text=True, timeout=30)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _cc_version():
+    """返回交叉编译器的主版本号；拿不到就当 0。"""
+    cc = os.environ.get('CROSS_COMPILE', '') + 'gcc'
+    try:
+        r = subprocess.run([cc, '-dumpversion'], capture_output=True, text=True, timeout=30)
+        if r.returncode == 0 and r.stdout.strip():
+            return int(r.stdout.strip().split('.')[0])
+    except Exception:
+        pass
+    return 0
+
+
 def patch_top_makefile(kdir):
     """给顶层 Makefile 追加 -fcommon 和告警降级。"""
     p = os.path.join(kdir, 'Makefile')
@@ -105,21 +135,65 @@ def patch_top_makefile(kdir):
         end = nl + 1
     insert_at = end
 
+    # 告警降级不能写死：GCC 版本之间这些选项的可用性差别很大。
+    # 实测 GCC 11 上直接写 -Wno-error=use-after-free 会让 cc1 直接报错退出：
+    #   cc1: error: '-Wno-error=use-after-free': no option '-Wuse-after-free'
+    # （use-after-free 是 GCC 12 才加的，dangling-pointer 也是）。
+    # 所以这里先探测，只保留编译器认识的。
+    candidates = [
+        '-Wno-error=use-after-free',
+        '-Wno-error=dangling-pointer',
+        '-Wno-error=array-bounds',
+        '-Wno-error=maybe-uninitialized',
+        '-Wno-error=stringop-overflow',
+        '-Wno-error=stringop-overread',
+        '-Wno-error=address',
+        '-Wno-error=tautological-compare',
+        '-Wno-error=misleading-indentation',
+        '-Wno-error=shift-negative-value',
+    ]
+    supported = [f for f in candidates if _cc_supports(f)]
+    dropped = [f for f in candidates if f not in supported]
+
+    # 一个都没探测到，通常是编译器根本不在这台机器上（脚本单独跑的场景）。
+    # 这时不要静默退化成"只有 -fcommon"。但也不能乱猜：老编译器（GCC 9 以下）
+    # 可能根本不认识这些告警，加了反而让 cc1 直接报错。
+    # 折中：只探测编译器版本，GCC >= 10 才用保守默认（-fno-common 是 GCC 10
+    # 才改成默认的，只有这一代以上才需要这些降级）。
+    if not supported:
+        ver = _cc_version()
+        if ver >= 10:
+            print('  没探测到告警选项，但编译器是 GCC %d，用保守默认' % ver)
+            supported = [
+                '-Wno-error=array-bounds',
+                '-Wno-error=maybe-uninitialized',
+                '-Wno-error=stringop-overflow',
+            ]
+            dropped = [f for f in candidates if f not in supported]
+        else:
+            print('  编译器是 GCC %d，不需要告警降级（只需 -fcommon）' % ver)
+            dropped = list(candidates)
+
+    print('  编译器认识的告警选项:', ', '.join(supported) if supported else '(无)')
+    if dropped:
+        print('  跳过不支持的:', ', '.join(dropped))
+
+    warn_lines = '\n'.join('KBUILD_CFLAGS   += %s' % f for f in supported)
+
     inject = '''
 # --- GN3002_NEW_GCC_COMPAT ------------------------------------------------
-# 3.10 是 2016 年的代码，GCC 10+ 编不过。三处都是编译器换代带来的：
+# 3.10 是 2016 年的代码，GCC 10+ 编不过。两个来源：
 #   1. -fno-common 成了默认，多个 .c 里的同名全局变量变成 multiple
-#      definition（scripts/dtc 的 yylloc 最典型）；
-#   2. 新增的 -Wuse-after-free / -Warray-bounds 等告警把 -Werror 顶掉；
-#   3. -Wmaybe-uninitialized 在 3.10 的代码里命中太多。
+#      definition（scripts/dtc 的 yylloc 最典型）-> 加 -fcommon；
+#   2. 新增的告警把 -Werror 顶掉 -> 逐项降级为非错误。
+#      注意绝不能写死列表：GCC 11 上 '-Wno-error=use-after-free' 会让 cc1
+#      直接报 "no option"，连编译都起不来。这里只用探测通过的选项。
 KBUILD_CFLAGS   += -fcommon
-KBUILD_CFLAGS   += -Wno-error=use-after-free -Wno-error=array-bounds
-KBUILD_CFLAGS   += -Wno-error=maybe-uninitialized -Wno-error=dangling-pointer
-KBUILD_CFLAGS   += -Wno-error=stringop-overflow -Wno-error=stringop-overread
+%s
 # scripts/dtc 是 hostprogs，不吃 KBUILD_CFLAGS，得单独给 HOSTCFLAGS
 HOSTCFLAGS      += -fcommon
 # -------------------------------------------------------------------------
-'''
+''' % warn_lines
 
     s = s[:insert_at] + inject + s[insert_at:]
     open(p, 'w', encoding='utf-8', newline='\n').write(s)
