@@ -1,31 +1,34 @@
-# Android fstab — Gionee GN3002 (mt6735)
+# Android fstab — Gionee GN3002 (mt6735) — LineageOS 14.1
 #
-# 这份文件会装到两个位置，内容必须一致：
-#   /fstab.mt6735         → ramdisk 根目录。init 第一阶段（此时 /system 还没挂）
-#                           只能读到这一份，缺了它挂不上 /system，开机停在 logo。
-#   /vendor/etc/fstab.mt6735 → 第二阶段的回退路径（fs_mgr 的查找顺序里排中间）。
+# 位置：/fstab.mt6735（ramdisk 根）
+#   7.1 的 init.rc 里是
+#       on fs
+#           mount_all /fstab.${ro.hardware}
+#   直接读 ramdisk 根目录的这份，不需要设备树节点，也没有 8.1 那套
+#   FirstStageMount 的限制。
+#
+# 路径为什么是短的一层：
+#   /dev/block/platform/mtk-msdc.0/by-name/system
+#
+#   8.1 上这个路径**不成立**，必须是
+#       /dev/block/platform/mtk-msdc.0/11230000.MSDC0/by-name/system
+#   因为 8.1 的 DeviceHandler::FindPlatformDevice()（init/devices.cpp:163）
+#   会沿 sysfs 一路往上找"subsystem 指向 /sys/bus/platform"的那一层，
+#   而 mmc@11230000 本身是个 platform_device，于是路径多一级。
+#
+#   7.1 的 ueventd 只取 /devices/platform/ 后面的第一段（mtk-msdc.0），
+#   所以是短路径。两代行为不同，抄错就 ENOENT 挂不上。
 #
 # 分区名来自 scatter：system / userdata / cache / protect1 / protect2 / nvdata。
 # 本机没有独立 vendor 分区，vendor 内容在 system/vendor 里。
-#
-# 暂时不启用强制加密（FBE/FDE），metadata 分区留空不用。
-#
-# 路径要用 8.1 的形态：/dev/block/platform/mtk-msdc.0/11230000.MSDC0/by-name/
-# 而不是 5.1 的 /dev/block/platform/mtk-msdc.0/by-name/。
-# 原因：8.1 的 DeviceHandler::FindPlatformDevice() 会沿 sysfs 一路往上找
-# "subsystem -> /bus/platform" 的那一层，这颗 SoC 的 eMMC 主机
-# （mmc@11230000）本身是一个 platform_device，挂在 mtk-msdc.0 下面，
-# 所以它给出的 platform 路径是 "mtk-msdc.0/11230000.MSDC0"。
-# 5.1 的 ueventd 只取第一段（mtk-msdc.0），两者差一层。
-# 用 5.1 的路径在 8.1 第一阶段会 mount 返回 ENOENT（节点确实不存在）。
 
 #<src>                                                  <mnt_point>   <type>  <mnt_flags and options>                                  <fs_mgr_flags>
-/dev/block/platform/mtk-msdc.0/11230000.MSDC0/by-name/system           /system       ext4    ro,barrier=1                                             wait
-/dev/block/platform/mtk-msdc.0/11230000.MSDC0/by-name/userdata         /data         ext4    noatime,nosuid,nodev,noauto_da_alloc,discard             wait,check
-/dev/block/platform/mtk-msdc.0/11230000.MSDC0/by-name/cache            /cache        ext4    noatime,nosuid,nodev,noauto_da_alloc,discard             wait,check
-/dev/block/platform/mtk-msdc.0/11230000.MSDC0/by-name/protect1         /protect_f    ext4    noatime,nosuid,nodev,noauto_da_alloc,commit=1,nodelalloc  wait,check
-/dev/block/platform/mtk-msdc.0/11230000.MSDC0/by-name/protect2         /protect_s    ext4    noatime,nosuid,nodev,noauto_da_alloc,commit=1,nodelalloc  wait,check
-/dev/block/platform/mtk-msdc.0/11230000.MSDC0/by-name/nvdata           /nvdata       ext4    noatime,nosuid,nodev,noauto_da_alloc,discard             wait,check
+/dev/block/platform/mtk-msdc.0/by-name/system           /system       ext4    ro,barrier=1                                             wait
+/dev/block/platform/mtk-msdc.0/by-name/userdata         /data         ext4    noatime,nosuid,nodev,noauto_da_alloc,discard             wait,check
+/dev/block/platform/mtk-msdc.0/by-name/cache            /cache        ext4    noatime,nosuid,nodev,noauto_da_alloc,discard             wait,check
+/dev/block/platform/mtk-msdc.0/by-name/protect1         /protect_f    ext4    noatime,nosuid,nodev,noauto_da_alloc,commit=1,nodelalloc  wait,check
+/dev/block/platform/mtk-msdc.0/by-name/protect2         /protect_s    ext4    noatime,nosuid,nodev,noauto_da_alloc,commit=1,nodelalloc  wait,check
+/dev/block/platform/mtk-msdc.0/by-name/nvdata           /nvdata       ext4    noatime,nosuid,nodev,noauto_da_alloc,discard             wait,check
 
 # 外部存储：sdcard0 是内置（emmc@intsd），sdcard1 是 TF 卡
 /devices/mtk-msdc.0/11230000.MSDC0                     auto          vfat    defaults                                                 voldmanaged=sdcard0:emmc@intsd,noemulatedsd

@@ -62,17 +62,16 @@ TARGET_SUPPORTS_64_BIT_APPS := true
 # 表现就是开机直接复位、无任何日志。
 # ------------------------------------------------------------------------------
 # loglevel=4：只把 KERN_WARNING 及以上送进 console/ram_console。
-# 之前用 ignore_loglevel 把所有级别都打出来，结果 3 秒就把 64 KB 的
-# ram_console 写满，第一阶段的日志被后面第二阶段的噪声冲掉了，
-# 拉 last_kmsg 只能看到"已经跳过挂载"的结果，看不到原因。
-# 现在只留 warning/error，第一阶段那几行能完整保留。
+# 3.10 的 ram_console 只有 64 KB，用 ignore_loglevel 把所有级别都打出来时
+# 3 秒就绕回一圈，早期的日志全被后半段的噪声冲掉，拉 last_kmsg 只剩结果
+# 看不到原因。只留 warning/error，关键几行才能保留。
 BOARD_KERNEL_CMDLINE := bootopt=64S3,32N2,64N2 androidboot.hardware=mt6735 androidboot.selinux=permissive loglevel=4
-# androidboot.hardware=mt6735：8.1 的 init 不再从 /proc/cpuinfo 猜硬件名
-# （5.1 时代那个 get_hardware_name() 已经删掉），只认 ro.boot.hardware，
-# 为空时 export_kernel_boot_props() 把 ro.hardware 设成 "unknown"。
-# 后果是 fs_mgr 找 /fstab.unknown、init.rc 找 /init.unknown.rc，全部落空，
-# 第一阶段挂不上 /system，开机直接死在 init。原厂 5.1 的 cmdline 里没有
-# 这一项（它靠 cpuinfo），所以必须自己补。
+# androidboot.hardware=mt6735：
+#   7.1 的 init 会从 /proc/cpuinfo 里读 Hardware 字段猜硬件名
+#   （system/core/init/util.cpp 的 get_hardware_name），原厂 5.1 的内核
+#   已经把 Hardware 写成 mt6735，所以严格说这一项不是必需的。
+#   但显式给上更稳：命令行优先于 cpuinfo，也省得将来换了内核或改了
+#   cmdline 就莫名其妙找不到 init.mt6735.rc。
 # androidboot.selinux=permissive：设备树里还没有 sepolicy，先用宽容模式
 # 拿到开机日志，等系统能起来了再逐条收紧。
 BOARD_KERNEL_BASE := 0x40000000
@@ -175,36 +174,36 @@ RECOVERY_SDCARD_ON_DATA := true
 
 
 # ==============================================================================
-# LineageOS 15.1 专属配置
+# LineageOS 14.1 专属配置
 #
 # 这一段只被 lineage_gbl7356 产品读取，对 TWRP（omni_gbl7356）构建无影响：
-# 上面 TWRP 用不到的变量，8.1 的 build 系统会直接忽略。
+# 上面 TWRP 用不到的变量，7.1 的 build 系统会直接忽略。
 # ==============================================================================
 
 # 本机 scatter 里没有 vendor 分区，只能走非 Treble：
-# 厂商内容全部落在 /system/vendor，不生成 vendor.img，也不需要 VNDK。
+# 厂商内容全部落在 /system/vendor，不生成 vendor.img。
+# （7.1 时代这个概念还没正式化，就是普通的 system/vendor 目录。）
 BOARD_USES_VENDORIMAGE := false
-BOARD_BUILD_SYSTEM_ROOT_IMAGE := false
 # TARGET_COPY_OUT_VENDOR 已在上面（TWRP 段）声明为 system/vendor，此处不重复赋值。
 
-# 8.1 的 init 从 ramdisk 起，system 挂载后再 switch_root，
-# 所以 ramdisk 里必须有完整的 init + 第一阶段的 rc。
+# 7.1 的 init 直接从 ramdisk 起，**不需要** 8.1 那套
+# "ramdisk init → 挂载 system → switch_root" 的两阶段流程。
+# /system 由 init.rc 里的 mount_all 挂载。
 BOARD_ROOT_EXTRA_FOLDERS := \
     oemkeystore
 
-# 内核暂用原厂预编译 Image.gz-dtb。
-# TWRP（同为 Android 8.1 用户空间）已经在这颗内核上跑通了，先不动它，
-# 把变量减到最少；等系统能起、确认 sdcardfs / memfd_create 确实是瓶颈，
-# 再切到自编内核（TARGET_KERNEL_SOURCE）。
-# TARGET_KERNEL_SOURCE := kernel/gionee/gbl7356
-# TARGET_KERNEL_CONFIG := gbl7356_defconfig
+# 内核用原厂预编译 Image.gz-dtb，**一个字节都不改**。
+# 这是 14.1 相对 15.1 最大的优势：8.1 需要 hwbinder/vndbinder 三域、
+# 需要 FirstStageMount 的 DT fstab、需要 SELinux 降到 v29、需要绕过
+# init 的 mmap_rnd_bits 硬化——这些在 7.1 上全都不存在。
+# 详见 docs/DEBUG-LOG.md 的 B13 / B14。
 TARGET_KERNEL_ARCH := arm64
 
 # ==============================================================================
 # Java 编译：关掉 Jack
 # ==============================================================================
-# build/core/clear_vars.mk:111 会把每个 Java 模块的 LOCAL_JACK_ENABLED 预置成
-# DEFAULT_JACK_ENABLED，而 config.mk:662 在 ANDROID_COMPILE_WITH_JACK=true 时
+# build/core/clear_vars.mk 会把每个 Java 模块的 LOCAL_JACK_ENABLED 预置成
+# DEFAULT_JACK_ENABLED，而 config.mk 在 ANDROID_COMPILE_WITH_JACK=true 时
 # 把它设成 full。于是整棵树的 Java 模块都挂着 `| setup-jack-server` 这个
 # order-only 依赖，构建一上来就得先起 Jack 服务。
 #
@@ -214,27 +213,20 @@ TARGET_KERNEL_ARCH := arm64
 #   SSL error when connecting to the Jack server
 # 而且 Jack 在 8.0 就已经被 AOSP 废弃，官方路线是 javac + dx。
 #
-# 设为 false 后 configure_local_jack.mk:21 会清空所有模块的 LOCAL_JACK_ENABLED，
-# setup-jack-server 从依赖图里消失，改用 javac 编译、dx 生成 dex。
+# 注意：7.1 时代 Jack **还是官方主线**，所以关掉它更要紧 ——
+# 不关的话在 7.1 上更容易踩到。
 ANDROID_COMPILE_WITH_JACK := false
 
 # ==============================================================================
-# SELinux 策略版本：降到 29
+# SELinux
 # ==============================================================================
-# 这颗 2016 年的 3.10.65 内核，SELinux 只实现到策略版本 29：
-#   SELinux: policydb version 30 does not match my version range 15-29
-# Android 8.1 默认产出 v30，内核读都不读就 EINVAL，init 走 security_failure()
-# 直接重启进 bootloader。
+# 这里**不需要** POLICYVERS。
 #
-# system/sepolicy/Android.mk:33 是 `POLICYVERS ?= 30`，注释写着
-# "Must be <= /sys/fs/selinux/policyvers reported by the Android kernel"，
-# 这里覆盖成 29。
+# 8.1 那一轮必须设 POLICYVERS := 29，因为 8.1 默认产出 v30，而 3.10 内核
+# 只支持到 29（SELinux: policydb version 30 does not match my version
+# range 15-29）。还得额外给 libsepol 打补丁，把 v30 才有的 ioctl 扩展权限
+# 从 avtab 里摘掉，否则 checkpolicy 拒绝写出。
 #
-# 但直接降版本编译会挂：
-#   libsepol.avtab_write_item: policy version 29 does not support ioctl
-#   extendedpermissions rules and one was specified
-# 因为 8.1 策略里用了 ioctl 扩展权限（v30 特性）。内核本来也不支持这东西，
-# 所以 CI 里会先给 libsepol 打个补丁：写 v29 策略时把 xperm 节点从 avtab
-# 里摘掉，其余规则（init_exec、域切换、属性标签）原样保留。
-# 见 .github/workflows/build-lineage.yml 的 "Patch libsepol for v29"。
-POLICYVERS := 29
+# 7.1 默认产出的就是 v28 左右，内核原生支持，一行都不用改。
+# 设备自己的 policy 目录也先不启用，等系统起来按 denial 逐条补。
+# BOARD_SEPOLICY_DIRS += $(DEVICE_PATH)/sepolicy

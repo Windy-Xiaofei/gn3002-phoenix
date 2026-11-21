@@ -1,8 +1,14 @@
-# Gionee GN3002 (mt6735) — 设备 init 配置
+# Gionee GN3002 (mt6735) — 设备 init 配置 — LineageOS 14.1
 #
-# 8.1 的 init 在解析完 AOSP 的 /init.rc 之后会 import
-#   /vendor/etc/init/hw/init.${ro.hardware}.rc
+# 位置：/init.mt6735.rc（ramdisk 根）
+#
+# 7.1 的 init 在解析完 AOSP 的 /init.rc 之后会 import
+#   /init.${ro.hardware}.rc
 # 也就是本文件（ro.hardware = mt6735）。
+#
+# 注意和 8.1 的区别：8.1 的路径是 /vendor/etc/init/hw/init.${ro.hardware}.rc
+# （多两层目录），7.1 直接在 ramdisk 根。写错位置的表现是「设备服务一个都没起」，
+# 但系统本身照常开机，非常难发现。
 #
 # 这里刻意只放「不阻塞开机」的最小服务集。原厂 init.mt6735.rc 有 1543 行、
 # 几十个服务（modem / wifi / bt / aee / xlog / touch ...），一次性全搬过来
@@ -16,7 +22,7 @@
 # MTK 的 MAC 地址、射频校准参数都存在 nvram 分区，由这个守护进程对外提供。
 # WiFi / 蓝牙 / modem 都依赖它，必须先起来。
 # ------------------------------------------------------------------------------
-service nvram_daemon /vendor/bin/nvram_daemon
+service nvram_daemon /system/vendor/bin/nvram_daemon
     class main
     user root
     group system
@@ -28,7 +34,7 @@ service nvram_daemon /vendor/bin/nvram_daemon
 # MTK 的 thermal_manager 读 /system/etc/.tp/thermal.conf 决定降频策略。
 # 没有它短时间不会死，但长时间跑会真的过热。
 # ------------------------------------------------------------------------------
-service thermal_manager /vendor/bin/thermal_manager
+service thermal_manager /system/vendor/bin/thermal_manager
     class main
     user root
     oneshot
@@ -38,7 +44,7 @@ service thermal_manager /vendor/bin/thermal_manager
 #
 # 常驻服务，直接读 PMIC 的库仑计。TWRP 里电量不准就是因为没有它。
 # ------------------------------------------------------------------------------
-service fuelgauged /vendor/bin/fuelgauged
+service fuelgauged /system/vendor/bin/fuelgauged
     class main
     user system
     group system
@@ -48,7 +54,7 @@ service fuelgauged /vendor/bin/fuelgauged
 #
 # 走 MTK 私有 socket（bt.int.adp / bt.a2dp.stream），class late_start 不阻塞开机。
 # ------------------------------------------------------------------------------
-service mtkbt /vendor/bin/mtkbt
+service mtkbt /system/vendor/bin/mtkbt
     class late_start
     socket bt.int.adp dgram 660 bluetooth net_bt
     socket bt.a2dp.stream dgram 660 bluetooth net_bt
@@ -69,8 +75,22 @@ on post-fs-data
 # ------------------------------------------------------------------------------
 # 权限
 #
-# 触摸是汇顶 FT8606 / 敦泰，走 input 子系统；PMIC 的充电节点要能被 framework 读。
+# 触摸是汇顶 FT8606，走 input 子系统；PMIC 的充电节点要能被 framework 读。
 # ------------------------------------------------------------------------------
 on boot
     chown system system /proc/mtk_battery_cmd
     chmod 0660 /proc/mtk_battery_cmd
+
+    # 7.1 的外部存储走 FUSE（内核没有 sdcardfs），把 fuse 设备放开
+    chmod 0666 /dev/fuse
+
+# ------------------------------------------------------------------------------
+# 7.1 特有：/system 挂载由 init.rc 的 mount_all 完成
+# ------------------------------------------------------------------------------
+# 不需要在这里写 mount_all，AOSP 的 /init.rc 里有：
+#     on fs
+#         mount_all /fstab.${ro.hardware}
+# 只要 /fstab.mt6735 放对了位置（ramdisk 根），就会自动挂上。
+#
+# 8.1 反过来：挂载逻辑全在 init 的 C++ 里（fs_mgr），init.rc 里根本没有
+# mount_all，所以当时要靠 FirstStageMount 打补丁。7.1 没有这个问题。

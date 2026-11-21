@@ -1,0 +1,244 @@
+name: LineageOS 14.1
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'ninja 目标：systemimage 全量；bootimage 只打 boot.img（调 ramdisk/cmdline 时用，快很多）'
+        required: false
+        default: systemimage
+  push:
+    branches: [ main ]
+    paths:
+      - 'device.mk'
+      - 'lineage.mk'
+      - 'AndroidProducts.mk'
+      - 'BoardConfig.mk'
+      - 'blobs/**'
+      - 'rootdir/**'
+      - 'configs/**'
+      - 'overlay/**'
+      - 'sepolicy/**'
+      - '.github/workflows/build-lineage.yml'
+
+concurrency:
+  group: lineage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout device tree
+        uses: actions/checkout@v4
+        with:
+          path: dt
+          fetch-depth: 1
+
+      # LineageOS 全量源码 + out 目录大概 90GB，runner 的 84GB 盘必须尽量腾空。
+      # 这些预装组件对 Android 编译毫无用处，删掉能多出 20GB 以上。
+      - name: Free disk space
+        run: |
+          echo "--- 清理前 ---"; df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" \
+                      /opt/hostedtoolcache/CodeQL /usr/local/.ghcup \
+                      /usr/lib/jvm/*11* /usr/lib/jvm/*17* /usr/lib/jvm/*21* 2>/dev/null || true
+          sudo apt-get clean
+          echo "--- 清理后 ---"; df -h /
+
+      - name: Install Java 8
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          curl -fsSL https://packages.adoptium.net/artifactory/api/gpg/key/public \
+            | sudo gpg --dearmor -o /etc/apt/keyrings/adoptium.gpg
+          echo "deb [signed-by=/etc/apt/keyrings/adoptium.gpg] https://packages.adoptium.net/artifactory/deb $(lsb_release -cs) main" \
+            | sudo tee /etc/apt/sources.list.d/adoptium.list
+          sudo apt-get update -qq
+          sudo apt-get install -y temurin-8-jdk
+          JH=$(ls -d /usr/lib/jvm/temurin-8-jdk-* 2>/dev/null | head -1)
+          echo "JAVA_HOME=$JH" >> $GITHUB_ENV
+          echo "$JH/bin" >> $GITHUB_PATH
+          sudo update-alternatives --set java  "$JH/bin/java"  2>/dev/null || true
+          sudo update-alternatives --set javac "$JH/bin/javac" 2>/dev/null || true
+          "$JH/bin/java" -version
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
+            git gnupg gperf imagemagick libelf-dev liblz4-tool libncurses-dev \
+            libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync \
+            schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python2.7 git-lfs \
+            lib32z1-dev lib32ncurses-dev lib32readline-dev
+
+          # AOSP 8.1 的 prebuilt clang（4053586）DT_NEEDED 里写死 libncurses.so.5 /
+          # libtinfo.so.5，jammy 只剩 .so.6，只能从 focal 的 pool 取。
+          BASE=http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses
+          cd /tmp
+          curl -sSLO "$BASE/libtinfo5_6.2-0ubuntu2.1_amd64.deb"
+          curl -sSLO "$BASE/libncurses5_6.2-0ubuntu2.1_amd64.deb"
+          sudo dpkg -i libtinfo5_6.2-0ubuntu2.1_amd64.deb libncurses5_6.2-0ubuntu2.1_amd64.deb || true
+          curl -sSLO "http://archive.ubuntu.com/ubuntu/pool/main/m/mpfr4/libmpfr4_3.1.4-1_amd64.deb"
+          sudo dpkg -i libmpfr4_3.1.4-1_amd64.deb || true
+          sudo ldconfig
+
+          # external/chromium-webview/prebuilt/arm64 这份 APK 在 LineageOS 那边
+          # 是用 Git LFS 存的（.gitattributes: *.apk filter=lfs，文件本身只有
+          # 134 字节的指针）。没有 git-lfs 时 checkout 下来就是那串文本，
+          # 一直混到 80% 才由 signapk 报 "error in opening zip file"。
+          # --skip-repo 把 filter 写进 ~/.gitconfig，后面的 repo sync checkout
+          # 才会真的去 review.lineageos.org 拉对象。
+          git lfs install --skip-repo
+          git lfs version
+
+      - name: repo init and sync
+        run: |
+          mkdir -p ~/bin
+          curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod +x ~/bin/repo
+          export PATH=~/bin:$PATH
+
+          mkdir -p $GITHUB_WORKSPACE/rom
+          cd $GITHUB_WORKSPACE/rom
+          git config --global user.name "gn3002-ci"
+          git config --global user.email "ci@gn3002.local"
+          git config --global color.ui false
+
+          # --depth=1 只拉当前提交，能把 .repo 从 ~40GB 压到 ~15GB
+          repo init -u https://github.com/CyanogenMod/android.git -b cm-14.1 --depth=1
+          repo sync -c -j$(( $(nproc --all) + 4 )) --force-sync --no-clone-bundle --no-tags --optimized-fetch
+          df -h /
+
+
+
+
+      - name: Place device tree
+        run: |
+          mkdir -p rom/device/gionee/gbl7356
+          rsync -a --exclude='.git' dt/ rom/device/gionee/gbl7356/
+          echo "--- device tree ---"
+          ls -la rom/device/gionee/gbl7356/
+          du -sh rom/device/gionee/gbl7356/blobs 2>/dev/null || echo "警告: blobs 缺失"
+
+      # 上一轮在 80% 挂了两个半小时才报错，就因为这个 APK 是 LFS 指针。
+      # 在这里先验一遍，拉不动就立刻停，别再烧一轮。
+      - name: Ensure webview prebuilt
+        run: |
+          WV="$GITHUB_WORKSPACE/rom/external/chromium-webview/prebuilt/arm64/webview.apk"
+          ls -l "$WV" || echo "webview.apk 不存在"
+          SZ=$(stat -c %s "$WV" 2>/dev/null || echo 0)
+          echo "当前大小: $SZ 字节"
+          if [ "$SZ" -lt 1000000 ]; then
+            echo "--- 还是 LFS 指针，手动拉一次 ---"
+            cat "$WV" || true
+            cd "$(dirname "$WV")"
+            git lfs install --local
+            git lfs pull
+            SZ=$(stat -c %s "$WV")
+            echo "拉取后大小: $SZ 字节"
+          fi
+          if [ "$SZ" -lt 1000000 ]; then
+            echo "FATAL: webview.apk 仍是指针"; exit 1
+          fi
+
+      # 用 restore/save 拆开写，不用 actions/cache@v4 的自动保存：
+      # 自动保存只在 job 成功时才写，而我们现在每轮都挂在半路，
+      # 于是 "Post Setup ccache" 每次都是 skipped，缓存从来没落过盘，
+      # 每轮都在零缓存冷编 —— 这是整轮两小时半的主因。
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ccache
+          key: ccache-lineage-${{ github.run_id }}
+          restore-keys: |
+            ccache-lineage-
+
+      - name: Build system image
+        run: |
+          cd rom
+          export LC_ALL=C
+          export USE_CCACHE=1
+          export CCACHE_DIR=$HOME/.ccache
+          # 仓库的 Actions 缓存总额只有 10GB，给 ccache 留 6GB，
+          # 剩下的给仓库里那几个 TWRP 缓存条目。
+          export CCACHE_MAXSIZE=6G
+          export CCACHE_COMPRESS=1
+          export CCACHE_COMPRESSLEVEL=3
+          # ccache 默认用「编译器文件的 mtime」判断编译器是否变过，而每次
+          # CI 都是全新 checkout，prebuilts 里 clang 的 mtime 每次都不同，
+          # 于是全部判为「换了编译器」，缓存直接失效。content 改成按内容哈希。
+          export CCACHE_COMPILERCHECK=content
+          # 头文件 mtime 在全新 checkout 里必然变，但内容没变，别让它影响命中
+          export CCACHE_SLOPPINESS=time_macros,include_file_mtime,include_file_ctime,file_stat_matches
+          export CCACHE_BASEDIR=$(pwd)
+          export ALLOW_MISSING_DEPENDENCIES=true
+
+          # Android 8.1 的构建脚本全是 Python 2 语法（except X, e / print 语句）。
+          # jammy 默认没有 python，python3 顶上就会 SyntaxError。装 python2.7 后
+          # 让 `python` 指向它；/usr/local/bin 在 PATH 里排在 /usr/bin 前面。
+          PY2=$(command -v python2.7 || command -v python2 || true)
+          if [ -z "$PY2" ]; then echo "FATAL: 没有 python2，8.1 编不了"; exit 1; fi
+          sudo ln -sf "$PY2" /usr/local/bin/python
+          echo "python -> $(readlink -f /usr/local/bin/python)"; python --version
+          echo "python3 -> $(command -v python3)"; python3 --version
+
+          ccache -z || true
+          source build/envsetup.sh
+          lunch lineage_gbl7356-userdebug
+          # 默认全量 systemimage（boot.img 会顺带产出，systemimage 依赖
+          # recovery_from_boot.p）。手动触发时可以填 bootimage 只打 boot.img，
+          # 调 ramdisk / cmdline 时十几分钟就能出结果。
+          TARGET="${{ github.event.inputs.target }}"
+          if [ -z "$TARGET" ]; then TARGET=systemimage; fi
+          echo "编译目标: $TARGET"
+          set +e
+          # 不要再接 `tail`：tail 要读完全部输入才输出，等于把 90k 行编译
+          # 输出全憋到最后，网页上看就是卡住不动。这里改成实时透传——
+          # 进度行（[ 12% 3456/90573]）每涨 2% 打一条，其余行原样输出，
+          # 完整日志仍然落在 /tmp/build.log 供失败时分析。
+          mka $TARGET -j$(nproc --all) 2>&1 \
+            | stdbuf -oL tee /tmp/build.log \
+            | awk 'BEGIN{last=-2} {if ($0 ~ /^\[ *[0-9]+%/) {match($0,/[0-9]+%/); p=substr($0,RSTART,RLENGTH-1)+0; if (p>=last+2) {print; fflush(); last=p} next} print; fflush()}'
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" != "0" ]; then
+            echo "===== 失败目标清单 ====="
+            grep -n "^FAILED:" /tmp/build.log | head -30 || true
+            echo "===== 首个失败块的上下文 ====="
+            awk '/^FAILED:/{c++} c==1' /tmp/build.log | head -50 || true
+            echo "===== 日志末尾 ====="
+            tail -40 /tmp/build.log
+          fi
+          ccache -s || true
+          df -h /
+          exit $rc
+
+      - name: Package output
+        if: always()
+        run: |
+          mkdir -p out_artifacts
+          find rom/out/target/product/gbl7356 -maxdepth 1 \
+               \( -name 'system.img' -o -name 'boot.img' -o -name '*.zip' \) \
+               -exec cp {} out_artifacts/ \; 2>/dev/null || true
+          ls -la out_artifacts/ || echo "没有产物"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lineage-gbl7356-${{ github.run_number }}
+          path: out_artifacts/
+          if-no-files-found: warn
+          retention-days: 7
+
+      # 关键：if: always() —— 构建失败也要把 ccache 存下来，
+      # 下一轮才有东西可复用。key 带 run_id 保证每次都新建条目。
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-lineage-${{ github.run_id }}
