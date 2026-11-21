@@ -1,0 +1,18 @@
+# 构建后用 patch_ramdisk_set.py 替换 ramdisk 里的 SELinux 相关条目。
+# 左侧是 ramdisk 内路径，右侧是仓库里的文件，"-" 表示置空。
+# 原因见 BoardConfig.mk 里 "SELinux 策略" 那段注释：
+# 8.1 的 v30 策略加载不了，换成原厂 5.1 的 v26；而 8.1 的标签表引用大量
+# 5.1 策略里不存在的类型，setxattr 会返回 EINVAL，init 的 restorecon 因此致命，
+# 所以整套上下文表也一并换回 5.1 的。
+dt/prebuilt/selinux51/sepolicy                        sepolicy
+dt/prebuilt/selinux51/file_contexts                   plat_file_contexts
+-                                                     nonplat_file_contexts
+dt/prebuilt/selinux51/property_contexts               plat_property_contexts
+-                                                     nonplat_property_contexts
+dt/prebuilt/selinux51/service_contexts                plat_service_contexts
+-                                                     nonplat_service_contexts
+dt/prebuilt/selinux51/seapp_contexts                  plat_seapp_contexts
+-                                                     nonplat_seapp_contexts
+-                                                     plat_hwservice_contexts
+-                                                     nonplat_hwservice_contexts
+-                                                     vndservice_contexts
