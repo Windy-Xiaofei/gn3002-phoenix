@@ -177,6 +177,23 @@ jobs:
           export CCACHE_SLOPPINESS=time_macros,include_file_mtime,include_file_ctime,file_stat_matches
           export CCACHE_BASEDIR=$(pwd)
           export ALLOW_MISSING_DEPENDENCIES=true
+          # 跳过 API 兼容性检查。
+          # 7.1 的 build/core/tasks/apicheck.mk:21 是
+          #     ifeq (,$(filter true, $(WITHOUT_CHECK_API) $(TARGET_BUILD_PDK)))
+          # 设了 ONLY_WITHOUT_CHECK_API 就整段跳过。
+          #
+          # 不设的后果（run 44911915786）：
+          #   ninja: error: '/7.txt', needed by
+          #   '.../PACKAGING/checkpublicapi-cm-last-timestamp',
+          #   missing and no known rule to make it
+          #
+          # 原因是 apicheck.mk:28 这么算"最后发布的 SDK 版本"：
+          #   last_released_sdk_version := $(lastword $(call numerically_sort, \
+          #       $(patsubst $(SRC_API_DIR)/%.txt,%, $(wildcard $(SRC_API_DIR)/*.txt))))
+          # 这套 manifest 下 txt 没拉全，算出空值，路径就成了 "/7.txt"。
+          #
+          # 我们不是要做过 CTS 的发行版，API 检查对自用移植没有意义。
+          export WITHOUT_CHECK_API=true
 
           # 7.1 的构建脚本同样是 Python 2 语法（except X, e / print 语句）。
           # jammy 默认没有 python，python3 顶上就会 SyntaxError。装 python2.7 后
