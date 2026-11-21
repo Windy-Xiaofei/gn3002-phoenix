@@ -205,6 +205,19 @@ jobs:
           df -h /
           exit $rc
 
+      # Android 8.1 产出的 /sepolicy 是 v30，这颗 3.10.65 内核只认 15-29，
+      # init 加载失败会 security_failure() 直接重启进 bootloader。
+      # 用 POLICYVERS := 29 降级编译也不行（8.1 策略用了 ioctl 扩展权限，
+      # v29 写不出来），所以构建完把 ramdisk 里的策略换成原厂 5.1 的 v26。
+      - name: Patch boot sepolicy
+        if: always()
+        run: |
+          BOOT=rom/out/target/product/gbl7356/boot.img
+          if [ ! -f "$BOOT" ]; then echo "没有 boot.img，跳过"; exit 0; fi
+          python3 dt/ci/patch_boot_ramdisk.py "$BOOT" /tmp/boot-patched.img dt/prebuilt/sepolicy-v26 sepolicy
+          cp /tmp/boot-patched.img "$BOOT"
+          ls -l "$BOOT"
+
       - name: Package output
         if: always()
         run: |

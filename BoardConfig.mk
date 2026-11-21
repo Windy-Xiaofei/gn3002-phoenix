@@ -214,18 +214,21 @@ TARGET_KERNEL_ARCH := arm64
 ANDROID_COMPILE_WITH_JACK := false
 
 # ==============================================================================
-# SELinux 策略版本：30 → 29
+# SELinux 策略：8.1 的 v30 加载不了，构建后要换成原厂 5.1 的 v26
 # ==============================================================================
-# 开机直接死在 init 的第一步：
+# 开机日志：
 #   SELinux: policydb version 30 does not match my version range 15-29
 #   init: Failed to load monolithic SELinux policy: Invalid argument
 #   init: panic: rebooting to bootloader
 #
-# 这颗 2016 年的 3.10.65 内核，SELinux 只实现到策略版本 29（原厂 recovery
-# 那份 v26 能正常加载，实测确认）。Android 8.1 默认产出 v30，内核读都不读
-# 就返回 EINVAL，init 按设计 security_failure() → 重启进 bootloader。
+# 这颗 3.10.65 内核的 SELinux 只到策略版本 29。想用
+# `POLICYVERS := 29` 让构建系统直接产出 v29 也不行，实测编译就挂：
+#   libsepol.avtab_write_item: policy version 29 does not support ioctl
+#   extendedpermissions rules and one was specified
+# 8.1 的策略大量使用 ioctl 扩展权限，那是 v30 才有的特性，降不下来。
 #
-# system/sepolicy/Android.mk:33 就是 `POLICYVERS ?= 30`，注释写着
-# "Must be <= /sys/fs/selinux/policyvers reported by the Android kernel"。
-# 这里覆盖成 29，checkpolicy / secilc 会直接产出 v29 格式的策略。
-POLICYVERS := 29
+# 所以走事后替换：构建出 boot.img 之后，把 ramdisk 里的 /sepolicy 换成
+# 原厂 5.1 系统那份（v26，284365 字节，从 work/rom/boot.img 里取的，
+# 就是这台机器当年真正跑过的策略）。见 ci/patch_boot_ramdisk.py
+# 和工作流里的 "Patch boot sepolicy" 步骤。
+# 配合 cmdline 的 androidboot.selinux=permissive，标签对不上也不会拦。
