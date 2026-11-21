@@ -109,7 +109,7 @@ jobs:
 
           # --depth=1 只拉当前提交，能把 .repo 从 ~40GB 压到 ~15GB
           repo init -u https://github.com/LineageOS/android.git -b lineage-15.1 --depth=1
-          repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags --optimized-fetch
+          repo sync -c -j$(( $(nproc --all) + 4 )) --force-sync --no-clone-bundle --no-tags --optimized-fetch
           df -h /
 
       # 内核的 SELinux 只到 v29，8.1 策略默认是 v30，且用了 ioctl 扩展权限。
@@ -176,6 +176,13 @@ jobs:
           export CCACHE_MAXSIZE=6G
           export CCACHE_COMPRESS=1
           export CCACHE_COMPRESSLEVEL=3
+          # ccache 默认用「编译器文件的 mtime」判断编译器是否变过，而每次
+          # CI 都是全新 checkout，prebuilts 里 clang 的 mtime 每次都不同，
+          # 于是全部判为「换了编译器」，缓存直接失效。content 改成按内容哈希。
+          export CCACHE_COMPILERCHECK=content
+          # 头文件 mtime 在全新 checkout 里必然变，但内容没变，别让它影响命中
+          export CCACHE_SLOPPINESS=time_macros,include_file_mtime,include_file_ctime,file_stat_matches
+          export CCACHE_BASEDIR=$(pwd)
           export ALLOW_MISSING_DEPENDENCIES=true
 
           # Android 8.1 的构建脚本全是 Python 2 语法（except X, e / print 语句）。
@@ -214,6 +221,7 @@ jobs:
             echo "===== 日志末尾 ====="
             tail -40 /tmp/build.log
           fi
+          ccache -s || true
           df -h /
           exit $rc
 
