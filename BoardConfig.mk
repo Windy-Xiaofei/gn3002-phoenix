@@ -61,7 +61,15 @@ TARGET_SUPPORTS_64_BIT_APPS := true
 # MT6735 的前 512KB 被 LK / ATF 用掉了，写错这个值内核会解压到错误地址，
 # 表现就是开机直接复位、无任何日志。
 # ------------------------------------------------------------------------------
-BOARD_KERNEL_CMDLINE := bootopt=64S3,32N2,64N2
+BOARD_KERNEL_CMDLINE := bootopt=64S3,32N2,64N2 androidboot.hardware=mt6735 androidboot.selinux=permissive
+# androidboot.hardware=mt6735：8.1 的 init 不再从 /proc/cpuinfo 猜硬件名
+# （5.1 时代那个 get_hardware_name() 已经删掉），只认 ro.boot.hardware，
+# 为空时 export_kernel_boot_props() 把 ro.hardware 设成 "unknown"。
+# 后果是 fs_mgr 找 /fstab.unknown、init.rc 找 /init.unknown.rc，全部落空，
+# 第一阶段挂不上 /system，开机直接死在 init。原厂 5.1 的 cmdline 里没有
+# 这一项（它靠 cpuinfo），所以必须自己补。
+# androidboot.selinux=permissive：设备树里还没有 sepolicy，先用宽容模式
+# 拿到开机日志，等系统能起来了再逐条收紧。
 BOARD_KERNEL_BASE := 0x40000000
 BOARD_KERNEL_PAGESIZE := 2048
 

@@ -1,7 +1,9 @@
 # Android fstab — Gionee GN3002 (mt6735)
 #
-# 8.1 的 fs_mgr 会依次找 /fstab.${ro.hardware} 和 /vendor/etc/fstab.${ro.hardware}，
-# 这里放 /vendor/etc/fstab.mt6735。
+# 这份文件会装到两个位置，内容必须一致：
+#   /fstab.mt6735         → ramdisk 根目录。init 第一阶段（此时 /system 还没挂）
+#                           只能读到这一份，缺了它挂不上 /system，开机停在 logo。
+#   /vendor/etc/fstab.mt6735 → 第二阶段的回退路径（fs_mgr 的查找顺序里排中间）。
 #
 # 分区名来自 scatter：system / userdata / cache / protect1 / protect2 / nvdata。
 # 本机没有独立 vendor 分区，vendor 内容在 system/vendor 里。

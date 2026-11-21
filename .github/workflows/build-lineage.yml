@@ -2,6 +2,11 @@ name: LineageOS 15.1
 
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: 'ninja 目标：systemimage 全量；bootimage 只打 boot.img（调 ramdisk/cmdline 时用，快很多）'
+        required: false
+        default: systemimage
   push:
     branches: [ main ]
     paths:
@@ -136,8 +141,12 @@ jobs:
             echo "FATAL: webview.apk 仍是指针"; exit 1
           fi
 
-      - name: Setup ccache
-        uses: actions/cache@v4
+      # 用 restore/save 拆开写，不用 actions/cache@v4 的自动保存：
+      # 自动保存只在 job 成功时才写，而我们现在每轮都挂在半路，
+      # 于是 "Post Setup ccache" 每次都是 skipped，缓存从来没落过盘，
+      # 每轮都在零缓存冷编 —— 这是整轮两小时半的主因。
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
         with:
           path: ~/.ccache
           key: ccache-lineage-${{ github.run_id }}
@@ -150,8 +159,11 @@ jobs:
           export LC_ALL=C
           export USE_CCACHE=1
           export CCACHE_DIR=$HOME/.ccache
-          export CCACHE_MAXSIZE=8G
+          # 仓库的 Actions 缓存总额只有 10GB，给 ccache 留 6GB，
+          # 剩下的给仓库里那几个 TWRP 缓存条目。
+          export CCACHE_MAXSIZE=6G
           export CCACHE_COMPRESS=1
+          export CCACHE_COMPRESSLEVEL=3
           export ALLOW_MISSING_DEPENDENCIES=true
 
           # Android 8.1 的构建脚本全是 Python 2 语法（except X, e / print 语句）。
@@ -166,10 +178,20 @@ jobs:
           ccache -z || true
           source build/envsetup.sh
           lunch lineage_gbl7356-userdebug
-          # 先只编 systemimage，不做 otapackage：出问题时报错更聚焦，
-          # 也省掉 ~10GB 的中间产物
+          # 默认全量 systemimage（boot.img 会顺带产出，systemimage 依赖
+          # recovery_from_boot.p）。手动触发时可以填 bootimage 只打 boot.img，
+          # 调 ramdisk / cmdline 时十几分钟就能出结果。
+          TARGET="${{ github.event.inputs.target }}"
+          if [ -z "$TARGET" ]; then TARGET=systemimage; fi
+          echo "编译目标: $TARGET"
           set +e
-          mka systemimage -j$(nproc --all) 2>&1 | tee /tmp/build.log | tail -120
+          # 不要再接 `tail`：tail 要读完全部输入才输出，等于把 90k 行编译
+          # 输出全憋到最后，网页上看就是卡住不动。这里改成实时透传——
+          # 进度行（[ 12% 3456/90573]）每涨 2% 打一条，其余行原样输出，
+          # 完整日志仍然落在 /tmp/build.log 供失败时分析。
+          mka $TARGET -j$(nproc --all) 2>&1 \
+            | stdbuf -oL tee /tmp/build.log \
+            | awk 'BEGIN{last=-2} {if ($0 ~ /^\[ *[0-9]+%/) {match($0,/[0-9]+%/); p=substr($0,RSTART,RLENGTH-1)+0; if (p>=last+2) {print; fflush(); last=p} next} print; fflush()}'
           rc=${PIPESTATUS[0]}
           set -e
           if [ "$rc" != "0" ]; then
@@ -200,3 +222,12 @@ jobs:
           path: out_artifacts/
           if-no-files-found: warn
           retention-days: 7
+
+      # 关键：if: always() —— 构建失败也要把 ccache 存下来，
+      # 下一轮才有东西可复用。key 带 run_id 保证每次都新建条目。
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-lineage-${{ github.run_id }}
