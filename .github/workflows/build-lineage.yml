@@ -124,6 +124,13 @@ jobs:
         run: |
           python3 dt/ci/patch-init.py rom/system/core/init/init.cpp
 
+      # Android 8 的第一阶段挂载只认设备树里的 /firmware/android/fstab，
+      # 这颗内核的 DTB 没有该节点，init 就认为"没有要挂的"，/system 永远挂不上。
+      # 补丁让它在 DT 缺失时回落到 ramdisk 的 fstab。<hw>。
+      - name: Patch first stage mount
+        run: |
+          python3 dt/ci/patch-first-stage.py rom/system/core/init/init_first_stage.cpp
+
       - name: Place device tree
         run: |
           mkdir -p rom/device/gionee/gbl7356
