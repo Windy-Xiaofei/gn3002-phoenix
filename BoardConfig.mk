@@ -212,3 +212,20 @@ TARGET_KERNEL_ARCH := arm64
 # 设为 false 后 configure_local_jack.mk:21 会清空所有模块的 LOCAL_JACK_ENABLED，
 # setup-jack-server 从依赖图里消失，改用 javac 编译、dx 生成 dex。
 ANDROID_COMPILE_WITH_JACK := false
+
+# ==============================================================================
+# SELinux 策略版本：30 → 29
+# ==============================================================================
+# 开机直接死在 init 的第一步：
+#   SELinux: policydb version 30 does not match my version range 15-29
+#   init: Failed to load monolithic SELinux policy: Invalid argument
+#   init: panic: rebooting to bootloader
+#
+# 这颗 2016 年的 3.10.65 内核，SELinux 只实现到策略版本 29（原厂 recovery
+# 那份 v26 能正常加载，实测确认）。Android 8.1 默认产出 v30，内核读都不读
+# 就返回 EINVAL，init 按设计 security_failure() → 重启进 bootloader。
+#
+# system/sepolicy/Android.mk:33 就是 `POLICYVERS ?= 30`，注释写着
+# "Must be <= /sys/fs/selinux/policyvers reported by the Android kernel"。
+# 这里覆盖成 29，checkpolicy / secilc 会直接产出 v29 格式的策略。
+POLICYVERS := 29
