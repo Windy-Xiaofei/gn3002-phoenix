@@ -1,4 +1,4 @@
-﻿name: LineageOS 14.1
+name: LineageOS 14.1
 
 on:
   workflow_dispatch:
@@ -178,14 +178,44 @@ jobs:
           export CCACHE_BASEDIR=$(pwd)
           export ALLOW_MISSING_DEPENDENCIES=true
 
-          # Android 8.1 的构建脚本全是 Python 2 语法（except X, e / print 语句）。
+          # 7.1 的构建脚本同样是 Python 2 语法（except X, e / print 语句）。
           # jammy 默认没有 python，python3 顶上就会 SyntaxError。装 python2.7 后
           # 让 `python` 指向它；/usr/local/bin 在 PATH 里排在 /usr/bin 前面。
           PY2=$(command -v python2.7 || command -v python2 || true)
-          if [ -z "$PY2" ]; then echo "FATAL: 没有 python2，8.1 编不了"; exit 1; fi
+          if [ -z "$PY2" ]; then echo "FATAL: 没有 python2，7.1 编不了"; exit 1; fi
           sudo ln -sf "$PY2" /usr/local/bin/python
           echo "python -> $(readlink -f /usr/local/bin/python)"; python --version
           echo "python3 -> $(command -v python3)"; python3 --version
+
+          # ----- Jack ----------------------------------------------------------
+          # 7.1 必须用 Jack（见 BoardConfig.mk 里的说明：非 Jack 路径没有
+          # 生成 with-local/classes.dex 的规则）。
+          #
+          # 但 jack-admin 的服务端用 TLSv1 + 自签 JKS，而 Temurin 8u331 之后
+          # 默认把 TLSv1 列入 jdk.tls.disabledAlgorithms，于是每次都在握手里死：
+          #   Jack server failed to (re)start
+          #   SSL error when connecting to the Jack server
+          # 这里把它从禁用列表里摘掉。只影响这个一次性 CI 环境。
+          JAVA_SEC=""
+          for c in "$JAVA_HOME/jre/lib/security/java.security" \
+                   "$JAVA_HOME/conf/security/java.security"; do
+            if [ -f "$c" ]; then JAVA_SEC="$c"; break; fi
+          done
+          if [ -n "$JAVA_SEC" ]; then
+            echo "修补 $JAVA_SEC 的 TLS 禁用列表"
+            grep '^jdk.tls.disabledAlgorithms' "$JAVA_SEC" || true
+            sudo sed -i 's/^jdk\.tls\.disabledAlgorithms=.*/jdk.tls.disabledAlgorithms=SSLv3, RC4, DES, MD5withRSA, DH keySize < 1024, EC keySize < 224, 3DES_EDE_CBC, anon, NULL/' "$JAVA_SEC"
+            grep '^jdk.tls.disabledAlgorithms' "$JAVA_SEC" || true
+          else
+            echo "警告: 找不到 java.security，Jack 可能会 TLS 握手失败"
+          fi
+
+          # Jack server 的堆内存。默认只给 1G 左右，7.1 全量编译的
+          # 单个 Java 模块（framework、Settings 之类）会 OOM。
+          # -Dfile.encoding 是 7.1 官方建议，避免中文资源乱码。
+          export JACK_SERVER_VM_ARGUMENTS="-Dfile.encoding=UTF-8 -XX:+TieredCompilation -Xmx4g"
+          export JACK_SERVER=true
+          echo "JACK_SERVER_VM_ARGUMENTS=$JACK_SERVER_VM_ARGUMENTS"
 
           ccache -z || true
           source build/envsetup.sh
