@@ -99,6 +99,12 @@ jobs:
           print('符号顺序检查通过')
           EOF
 
+      - name: Patch kernel for modern GCC
+        run: |
+          # 3.10 遇上 GCC 11：缺 compiler-gcc11.h，且 GCC 10+ 默认 -fno-common
+          # 会让 scripts/dtc 的 yylloc 变成 multiple definition。
+          python3 dt/ci/patch-kernel-newgcc.py kernel
+
       - name: Configure kernel (smoke)
         run: |
           cd kernel
@@ -294,6 +300,10 @@ jobs:
       - name: Apply binder patch
         run: |
           python3 dt/ci/patch-binder-hwbinder.py kernel/drivers/android/binder.c
+
+      - name: Patch kernel for modern GCC
+        run: |
+          python3 dt/ci/patch-kernel-newgcc.py kernel
 
       - name: Configure kernel
         run: |

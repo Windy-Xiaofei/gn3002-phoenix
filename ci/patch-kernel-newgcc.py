@@ -84,6 +84,7 @@ def patch_top_makefile(kdir):
 
     # 找一个稳定的锚点：3.10 顶层 Makefile 里有一句
     #   KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes ...
+    # 注意 := 前面可能有多个空格，要用 \s* 而不是固定空格。
     m = re.search(r'^KBUILD_CFLAGS\s*:=.*$', s, re.M)
     if not m:
         sys.exit('顶层 Makefile 里没找到 KBUILD_CFLAGS，结构变了？')
