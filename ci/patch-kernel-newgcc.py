@@ -197,6 +197,50 @@ def fix_rt_rq(kdir):
     print('  已修 rt.c 的 rt_rq->rq')
 
 
+def patch_mtk_makefile_custom(kdir):
+    """把每个 MTK 驱动目录都加进 include 搜索路径。
+
+    现象：一堆 MTK 私有头文件"找不到"，但它们其实和引用它的 .c 在同一个
+    目录里：
+
+        drivers/misc/mediatek/gpio/mt6735/mt_gpio_debug.c  里写
+            #include <gpio_init.h>
+        drivers/misc/mediatek/gpio/mt6735/gpio_init.h      就在这里
+
+    用的是**尖括号**，GCC 不会搜索"当前目录"，只用 -I 列表。
+    MTK 的原始构建靠 Makefile.custom 里那一长串 -I 覆盖，但它是逐个手写的，
+    漏了不少（gpio/jpeg/videox 都没写进去）。
+
+    与其一个个补，不如用 wildcard 把所有 "<驱动>/<platform>" 目录一次性
+    加进去。这是纯搜索路径扩充，不改任何驱动逻辑。
+    """
+    p = os.path.join(kdir, 'drivers', 'misc', 'mediatek', 'Makefile.custom')
+    if not os.path.exists(p):
+        print('  警告: 找不到 Makefile.custom，跳过')
+        return
+    s = open(p, encoding='utf-8', errors='replace').read()
+
+    if 'GN3002_MTK_INCLUDE_WILDCARD' in s:
+        print('  Makefile.custom 已处理，跳过')
+        return
+
+    s += '''
+# --- GN3002_MTK_INCLUDE_WILDCARD -------------------------------------------
+# 上面那串 -I 是 MTK 逐个手写的，漏了不少驱动。这些驱动里的 .c 用
+# #include <xxx.h> 引同目录的头文件，尖括号不会搜当前目录，于是报
+#   fatal error: gpio_init.h: No such file or directory
+#   fatal error: jpeg_cmdq.h: No such file or directory
+#   fatal error: fbconfig_kdebug_k2.h: No such file or directory
+# 用 wildcard 把所有 "<驱动>/<platform>" 目录一次性加进来。
+GN3002_MTK_DRV_DIRS := $(wildcard $(MTK_CUSTOM_PATH)/*/$(MTK_PLATFORM))
+GN3002_MTK_DRV_DIRS += $(wildcard $(MTK_CUSTOM_PATH)/*/*/$(MTK_PLATFORM))
+ccflags-y += $(addprefix -I,$(GN3002_MTK_DRV_DIRS))
+# ---------------------------------------------------------------------------
+'''
+    open(p, 'w', encoding='utf-8', newline='\n').write(s)
+    print('  已给 Makefile.custom 加通配 include 路径')
+
+
 def patch_top_makefile(kdir):
     """给顶层 Makefile 追加 -fcommon 和告警降级。"""
     p = os.path.join(kdir, 'Makefile')
@@ -309,6 +353,7 @@ def main():
     link_mach_headers(kdir)
     fix_alarmtimer(kdir)
     fix_rt_rq(kdir)
+    patch_mtk_makefile_custom(kdir)
     patch_top_makefile(kdir)
     print('完成: 3.10 内核已适配现代 GCC')
 
