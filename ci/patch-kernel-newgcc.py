@@ -74,6 +74,47 @@ def write_compat_header(kdir):
     print('  生成兼容头文件:', ', '.join(written) if written else '(已存在，跳过)')
 
 
+def link_mach_headers(kdir):
+    """建 arch/arm64/include/mach 软链。
+
+    MTK 的源码树把自己那堆 mach 头文件放在
+        drivers/misc/mediatek/mach/<soc>/include/mach/
+    然后让 arch/<arch>/include/mach 指向它。这个软链是 MTK 的构建脚本
+    （build.sh / mk_xxx.pl）创建的，直接 git clone 下来是没有的。
+
+    缺了它的症状：
+        include/mach/mtk_rtc.h:6:10: fatal error:
+            mach/mt_typedefs.h: No such file or directory
+    """
+    arch = os.path.join(kdir, 'arch', 'arm64', 'include')
+    if not os.path.isdir(arch):
+        sys.exit('找不到 %s，内核目录不对？' % arch)
+
+    link = os.path.join(arch, 'mach')
+    # 软链建在 <kdir>/arch/arm64/include/ 里，要回到 <kdir> 需要向上三层：
+    #   .../include -> .../arm64 -> .../arch -> <kdir>
+    target_rel = '../../../drivers/misc/mediatek/mach/mt6735/include/mach'
+
+    # 目标目录必须真的存在，否则软链建了也是断的
+    real_target = os.path.normpath(os.path.join(arch, target_rel))
+    if not os.path.isdir(real_target):
+        print('  警告: %s 不存在，跳过 mach 软链' % real_target)
+        return
+
+    if os.path.islink(link) or os.path.exists(link):
+        print('  mach 软链已存在，跳过')
+        return
+
+    # Windows 上建软链需要管理员权限，CI 跑在 Linux 所以没问题
+    try:
+        os.symlink(target_rel, link)
+        print('  已建 arch/arm64/include/mach -> %s' % target_rel)
+    except OSError as e:
+        print('  警告: 建软链失败(%s)，改用复制' % e)
+        import shutil
+        shutil.copytree(real_target, link)
+
+
 def patch_top_makefile(kdir):
     """给顶层 Makefile 追加 -fcommon 和告警降级。"""
     p = os.path.join(kdir, 'Makefile')
@@ -183,6 +224,7 @@ def main():
         sys.exit(1)
     kdir = sys.argv[1]
     write_compat_header(kdir)
+    link_mach_headers(kdir)
     patch_top_makefile(kdir)
     print('完成: 3.10 内核已适配现代 GCC')
 

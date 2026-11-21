@@ -125,9 +125,10 @@ jobs:
             --enable CONFIG_SERIAL_AMBA_PL011 \
             --enable CONFIG_SERIAL_AMBA_PL011_CONSOLE \
             --disable CONFIG_ANDROID_BINDER_IPC_32BIT \
+            --disable CONFIG_RT_GROUP_SCHED \
             --enable CONFIG_BINFMT_ELF || true
           make olddefconfig
-          grep -E "BINDER|DEVTMPFS|INITRD" .config | head -10
+          grep -E "BINDER|DEVTMPFS|INITRD|RT_GROUP" .config | head -10
 
       - name: Build kernel (smoke)
         run: |
@@ -348,7 +349,8 @@ jobs:
             --enable  CONFIG_ANDROID \
             --enable  CONFIG_ANDROID_BINDER_IPC \
             --disable CONFIG_ANDROID_BINDER_IPC_32BIT \
-            --enable  CONFIG_ANDROID_BINDER_DEBUG || true
+            --enable  CONFIG_ANDROID_BINDER_DEBUG \
+            --disable CONFIG_RT_GROUP_SCHED || true
 
           # 触摸：原厂用的是 Focaltech ft8606（原厂 vmlinux 里能查到
           # tm_ft8606 / focaltech 字样），但这棵公版源码树里没有 ft8606，
