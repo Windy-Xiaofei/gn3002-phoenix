@@ -77,6 +77,23 @@ NEW = '''FirstStageMount::FirstStageMount()
     }
 }'''
 
+MOUNT_OLD = """        if (fs_mgr_do_mount_one(fstab_rec)) {
+            PLOG(ERROR) << "Failed to mount '" << fstab_rec->mount_point << "'";
+            return false;
+        }"""
+
+# 挂载失败时补几条诊断：设备节点在不在、/dev/block 建出来没有。
+# 这两个信息决定了下一步是查 uevent/软链，还是查文件系统本身。
+MOUNT_NEW = """        if (fs_mgr_do_mount_one(fstab_rec)) {
+            PLOG(ERROR) << "Failed to mount '" << fstab_rec->mount_point << "' dev='"
+                        << fstab_rec->blk_device << "'";
+            LOG(ERROR) << "fsm: dev_exists=" << (access(fstab_rec->blk_device, F_OK) == 0)
+                       << " /dev/block_exists=" << (access("/dev/block", F_OK) == 0);
+            return false;
+        }"""
+
+MOUNT_MARK = 'fsm: dev_exists='
+
 CTOR_MARK = 'No fstab in device tree; using '
 GATE_MARK = 'falling back to ramdisk fstab'
 
@@ -124,6 +141,8 @@ def main():
         todo.append(('ctor', OLD, NEW))
     if GATE_MARK not in s:
         todo.append(('gate', GATE_OLD, GATE_NEW))
+    if MOUNT_MARK not in s:
+        todo.append(('mount-diag', MOUNT_OLD, MOUNT_NEW))
 
     if not todo:
         print('已经打过补丁，跳过')
