@@ -193,26 +193,42 @@ jobs:
               print('[cmsdk] 警告: 找不到 ' + p)
 
           # ---- 补丁 2: netd 条件编译 bug ------------------------------------
-          # CM 14.1 的 CommandListener.cpp 在 #else(非 QSAP_WLAN) 分支调用
-          #   softapCtrl.startSoftap(false, cli)   <- 2 个参数
-          # 但 SoftapController.h 里双参数重载被 #ifdef LIBWPA_CLIENT_EXISTS
-          # 包住；MTK 设备两个宏都没开，于是只剩单参数版本 -> 编译失败：
-          #   error: too many arguments to function call, expected at most
-          #   single argument 'global_ctrl_iface', have 2 arguments
-          # 去掉多余的 cli 参数即可。softap 不是 MTK bring-up 的核心路径。
-          p = ROM + '/system/netd/server/CommandListener.cpp'
-          if os.path.isfile(p):
-              s = open(p, encoding='utf-8', errors='surrogateescape').read()
+          # CM 14.1 源码不一致：SoftapController.h 里双参数 startSoftap 重载
+          # 被 #ifdef LIBWPA_CLIENT_EXISTS 包住（由 WPA_SUPPLICANT_VERSION 决定），
+          # 单参数版则在 #else。而 MTK 设备这两个宏都没开，导致：
+          #   (a) CommandListener.cpp #else 分支无条件调用 startSoftap(false, cli)
+          #       -> too many arguments (expected at most single argument)
+          #   (b) SoftapController.cpp 的定义还是 startSoftap(bool, SocketClient*=NULL)
+          #       -> out-of-line definition does not match any declaration
+          # 函数体里唯一用到 socketClient 的那行也在 #ifdef 内，无该宏时是死参数。
+          # 所以调用方去掉 cli、定义方去掉 socketClient 即可，两处必须同时改。
+          cl = ROM + '/system/netd/server/CommandListener.cpp'
+          if os.path.isfile(cl):
+              s = open(cl, encoding='utf-8', errors='surrogateescape').read()
               old = 'gCtls->softapCtrl.startSoftap(false, cli)'
               new = 'gCtls->softapCtrl.startSoftap(false)'
-              if old not in s:
-                  print('[netd] 已是新写法或找不到目标，跳过')
-              else:
+              if old in s:
                   s = s.replace(old, new)
-                  open(p, 'w', encoding='utf-8', errors='surrogateescape').write(s)
-                  print('[netd] 已去掉多余 cli 参数: ' + p)
+                  open(cl, 'w', encoding='utf-8', errors='surrogateescape').write(s)
+                  print('[netd] 调用方去掉 cli: ' + cl)
+              else:
+                  print('[netd] 调用方已是新写法，跳过')
           else:
-              print('[netd] 警告: 找不到 ' + p)
+              print('[netd] 警告: 找不到 ' + cl)
+
+          sc = ROM + '/system/netd/server/SoftapController.cpp'
+          if os.path.isfile(sc):
+              s = open(sc, encoding='utf-8', errors='surrogateescape').read()
+              old = 'int SoftapController::startSoftap(bool global_ctrl_iface, SocketClient *socketClient = NULL) {'
+              new = 'int SoftapController::startSoftap(bool global_ctrl_iface) {'
+              if old in s:
+                  s = s.replace(old, new)
+                  open(sc, 'w', encoding='utf-8', errors='surrogateescape').write(s)
+                  print('[netd] 定义方去掉 socketClient: ' + sc)
+              else:
+                  print('[netd] 定义方已是新写法，跳过')
+          else:
+              print('[netd] 警告: 找不到 ' + sc)
           PYEOF
           echo "--- 补丁结果 ---"
           grep -n -A2 'internal R.java dep fix' "$GITHUB_WORKSPACE/rom/vendor/cmsdk/Android.mk" || true
