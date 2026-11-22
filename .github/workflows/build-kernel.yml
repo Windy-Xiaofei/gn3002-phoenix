@@ -16,12 +16,14 @@ on:
         description: 'smoke = 只跑 qemu 冒烟测试；full = 出真机 Image.gz-dtb'
         required: false
         default: full
-  push:
-    branches: [ main ]
-    paths:
-      - 'ci/patch-binder-hwbinder.py'
-      - 'kernel/**'
-      - '.github/workflows/build-kernel.yml'
+  # 不再随 push 自动跑。
+  #
+  # 这条内核线原本是为 Android 8.1 补 /dev/hwbinder 而开的（8.1 的 HIDL 需要
+  # binder/hwbinder/vndbinder 三个独立域）。现在主线转到 Android 7.1，
+  # 7.1 没有 HIDL，内核用原厂 Image.gz-dtb 就够，不需要重编。
+  #
+  # 保留手动触发：等 15.1 或者以后要改内核时，先跑 mode=smoke 用 qemu
+  # 验证补丁能编能引导，再出 full 产物。别让它随每次设备树改动白烧 40 分钟。
 
 concurrency:
   group: kernel-${{ github.ref }}

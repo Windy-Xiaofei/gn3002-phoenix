@@ -19,10 +19,13 @@ on:
       - 'configs/**'
       - 'overlay/**'
       - 'sepolicy/**'
-      - '.github/workflows/build-lineage.yml'
+      # 注意是 141 自己的文件名。之前复制自 15.1，指向 build-lineage.yml，
+      # 结果改这个文件本身不会触发构建。
+      - '.github/workflows/build-lineage141.yml'
 
 concurrency:
-  group: lineage-${{ github.ref }}
+  # 不能和 15.1 共用 `lineage-` 前缀：那样两边会互相 cancel-in-progress。
+  group: lineage141-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -262,16 +265,48 @@ jobs:
           TARGET="${{ github.event.inputs.target }}"
           if [ -z "$TARGET" ]; then TARGET=systemimage; fi
           echo "编译目标: $TARGET"
-          set +e
+
           # 不要再接 `tail`：tail 要读完全部输入才输出，等于把 90k 行编译
           # 输出全憋到最后，网页上看就是卡住不动。这里改成实时透传——
           # 进度行（[ 12% 3456/90573]）每涨 2% 打一条，其余行原样输出，
           # 完整日志仍然落在 /tmp/build.log 供失败时分析。
-          mka $TARGET -j$(nproc --all) 2>&1 \
-            | stdbuf -oL tee /tmp/build.log \
-            | awk 'BEGIN{last=-2} {if ($0 ~ /^\[ *[0-9]+%/) {match($0,/[0-9]+%/); p=substr($0,RSTART,RLENGTH-1)+0; if (p>=last+2) {print; fflush(); last=p} next} print; fflush()}'
-          rc=${PIPESTATUS[0]}
-          set -e
+          run_build() {
+            mka $TARGET -j$(nproc --all) 2>&1 \
+              | stdbuf -oL tee /tmp/build.log \
+              | awk 'BEGIN{last=-2} {if ($0 ~ /^\[ *[0-9]+%/) {match($0,/[0-9]+%/); p=substr($0,RSTART,RLENGTH-1)+0; if (p>=last+2) {print; fflush(); last=p} next} print; fflush()}'
+            return ${PIPESTATUS[0]}
+          }
+
+          # Android 7.1 的 Jack 有个构建顺序竞争：
+          #
+          #   FAILED: .../org.cyanogenmod.platform.internal_intermediates/classes.jack
+          #   4 errors during configuration:
+          #     Property 'jack.source': file '.../org.cyanogenmod.platform-res_intermediates/
+          #     src/cyanogenmod/platform/Manifest.java' does not exist
+          #
+          # Jack 拿到的 source list 里带着由 aapt 生成的 R.java / Manifest.java，
+          # 但高并发下 aapt 还没落地它就开编了。7.1 的 makefile 没给这条边加
+          # 依赖，所以这是必现的偶发失败，不是代码问题。
+          # 这些文件是增量产物，重跑一次就存在了——比改 AOSP 的 Java 规则便宜得多。
+          attempt=1
+          while :; do
+            echo "===== 编译尝试 $attempt ====="
+            set +e
+            run_build
+            rc=$?
+            set -e
+            [ "$rc" = "0" ] && break
+            cp -f /tmp/build.log /tmp/build.log.$attempt 2>/dev/null || true
+            if [ "$attempt" -ge 3 ]; then break; fi
+            if grep -q "Property 'jack.source'" /tmp/build.log && \
+               grep -q "does not exist" /tmp/build.log; then
+              echo "===== Jack 抢跑（生成的 R.java 还没落地），重试 ====="
+              attempt=$((attempt + 1))
+              continue
+            fi
+            break
+          done
+
           if [ "$rc" != "0" ]; then
             echo "===== 失败目标清单 ====="
             grep -n "^FAILED:" /tmp/build.log | head -30 || true

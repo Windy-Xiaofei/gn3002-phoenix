@@ -1,5 +1,15 @@
 name: LineageOS 15.1
 
+# ⏸ 目前暂停维护。
+#
+# 15.1 已经能编出包：system.img 3.0 GB(raw) 可以刷进机器，boot.img 里
+# 第一阶段挂载（DT fstab 缺失 -> ramdisk 回落）也修好了。卡在 hwbinder：
+# 8.1 的 HIDL 需要 /dev/hwbinder + /dev/vndbinder 两个独立 binder 域，
+# 3.10 内核只有一个，要重编内核才过得去。
+#
+# 主线已转到 14.1（Android 7.1 没有 HIDL，原厂内核直接可用）。这条留着，
+# 但不再随 push 自动跑 —— 它和 14.1 共用 device.mk / BoardConfig.mk 等
+# 路径，留着 push 触发只会每次白烧一个半小时。
 on:
   workflow_dispatch:
     inputs:
@@ -7,19 +17,6 @@ on:
         description: 'ninja 目标：systemimage 全量；bootimage 只打 boot.img（调 ramdisk/cmdline 时用，快很多）'
         required: false
         default: systemimage
-  push:
-    branches: [ main ]
-    paths:
-      - 'device.mk'
-      - 'lineage.mk'
-      - 'AndroidProducts.mk'
-      - 'BoardConfig.mk'
-      - 'blobs/**'
-      - 'rootdir/**'
-      - 'configs/**'
-      - 'overlay/**'
-      - 'sepolicy/**'
-      - '.github/workflows/build-lineage.yml'
 
 concurrency:
   group: lineage-${{ github.ref }}
