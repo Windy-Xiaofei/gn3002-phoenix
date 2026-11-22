@@ -229,6 +229,66 @@ jobs:
                   print('[netd] 定义方已是新写法，跳过')
           else:
               print('[netd] 警告: 找不到 ' + sc)
+
+          # ---- 补丁 3: sepolicy v29（3.10 内核只支持 15-29）------------------
+          # CM 14.1 的 checkpolicy 默认产出 sepolicy v30，MTK 3.10 内核只支持
+          # 15-29，开机 init 报 "policydb version 30 does not match my version
+          # range 15-29" -> Security failure -> 重启进 recovery。
+          # 设 POLICYVERS := 29 让 checkpolicy 产出 v29。
+          bc = ROM + '/device/gionee/gbl7356/BoardConfig.mk'
+          if os.path.isfile(bc):
+              s = open(bc, encoding='utf-8', errors='surrogateescape').read()
+              if 'POLICYVERS' in s:
+                  print('[board] 已有 POLICYVERS，跳过')
+              else:
+                  s += ('\n# [gn3002] 3.10 内核只支持 policy v15-29，默认 v30 开不了机\n'
+                        'POLICYVERS := 29\n')
+                  open(bc, 'w', encoding='utf-8', errors='surrogateescape').write(s)
+                  print('[board] 已加 POLICYVERS := 29: ' + bc)
+          else:
+              print('[board] 警告: 找不到 ' + bc)
+
+          # ---- 补丁 4: libsepol 写 v29 时丢弃 xperm 节点 ---------------------
+          # v29 下 libsepol 遇到 xperm(ioctl extended perms, v30 特性) 条目会报
+          # "policy version 29 does not support ioctl extendedpermissions rules"。
+          # 即使强改成 v29，内核 avtab reader 也不认 xperm 的 specified 位，报
+          # "avtab: more than one specifier"。所以必须在写 avtab 前摘除 xperm 节点。
+          # 注意锚点与 8.1 不同：7.1 的 avtab_write 里 nel=cpu_to_le32(a->nel)
+          # 在写循环之前，必须在那之前摘节点并重算 a->nel。
+          wc = ROM + '/external/selinux/libsepol/src/write.c'
+          if os.path.isfile(wc):
+              s = open(wc, encoding='utf-8', errors='surrogateescape').read()
+              if 'gn3002 v29 xperm fix' in s:
+                  print('[libsepol] 已打过补丁，跳过')
+              else:
+                  anchor = ('\t} else {\n'
+                            '\t\t/* New avtab format.  nel is good to go. */\n'
+                            '\t\tnel = cpu_to_le32(a->nel);')
+                  fix = ('\t} else {\n'
+                         '\t\t/* [gn3002 v29 xperm fix] 目标内核 v29 无 xperm，先摘除 */\n'
+                         '\t\tif (p->policyvers < POLICYDB_VERSION_XPERMS_IOCTL) {\n'
+                         '\t\t\tfor (i = 0; i < a->nslot; i++) {\n'
+                         '\t\t\t\tavtab_ptr_t *pp = &a->htable[i];\n'
+                         '\t\t\t\twhile (*pp) {\n'
+                         '\t\t\t\t\tif ((*pp)->key.specified & AVTAB_XPERMS) {\n'
+                         '\t\t\t\t\t\t*pp = (*pp)->next;\n'
+                         '\t\t\t\t\t\ta->nel--;\n'
+                         '\t\t\t\t\t} else {\n'
+                         '\t\t\t\t\t\tpp = &(*pp)->next;\n'
+                         '\t\t\t\t\t}\n'
+                         '\t\t\t\t}\n'
+                         '\t\t\t}\n'
+                         '\t\t}\n'
+                         '\t\t/* New avtab format.  nel is good to go. */\n'
+                         '\t\tnel = cpu_to_le32(a->nel);')
+                  if anchor not in s:
+                      print('[libsepol] 警告: 找不到 avtab_write 锚点，跳过')
+                  else:
+                      s = s.replace(anchor, fix, 1)
+                      open(wc, 'w', encoding='utf-8', errors='surrogateescape').write(s)
+                      print('[libsepol] 已摘除 xperm 节点: ' + wc)
+          else:
+              print('[libsepol] 警告: 找不到 ' + wc)
           PYEOF
           echo "--- 补丁结果 ---"
           grep -n -A2 'internal R.java dep fix' "$GITHUB_WORKSPACE/rom/vendor/cmsdk/Android.mk" || true
