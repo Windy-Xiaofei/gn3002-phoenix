@@ -149,6 +149,51 @@ jobs:
             echo "FATAL: webview.apk 仍是指针"; exit 1
           fi
 
+      # 补 cmsdk 的跨模块依赖边（根本原因，见 Build 步骤里的长注释）。
+      # 只改 CI 里 repo sync 出来的源码，不碰仓库设备树。内联 Python 而不是
+      # 引用 ci/ 下的脚本：这个 workflow 用 ref: cm-14.1 checkout 设备树，
+      # main 分支新增的 ci/ 脚本 runner 上根本看不到。
+      - name: Patch cmsdk R.java dependency
+        run: |
+          CMSDK="$GITHUB_WORKSPACE/rom/vendor/cmsdk/Android.mk"
+          if [ ! -f "$CMSDK" ]; then
+            echo "警告: 找不到 $CMSDK，跳过补丁（将只靠预构建兜底）"
+            exit 0
+          fi
+          python3 - "$CMSDK" <<'PYEOF'
+          import sys
+          p = sys.argv[1]
+          s = open(p, encoding='utf-8', errors='surrogateescape').read()
+          mark = '# [gn3002] internal R.java dep fix'
+          if mark in s:
+              print('已打过补丁，跳过')
+              sys.exit(0)
+          # 定位 internal 模块（platform 模块里也有同名 full_target 规则，
+          # 必须从 internal 的 LOCAL_MODULE 往后找它自己的 include）。
+          # 关键：必须插在 BUILD_STATIC_JAVA_LIBRARY 的 include **之后**——
+          # full_classes_jack / noshrob_classes_jack 是在那个 include 里
+          # （static_java_library.mk 第 170-171 行）才定义的，之前变量还是空的。
+          a = s.find('LOCAL_MODULE:= org.cyanogenmod.platform.internal')
+          inc = 'include $(BUILD_STATIC_JAVA_LIBRARY)'
+          j = s.find(inc, a) if a >= 0 else -1
+          if j < 0:
+              print('警告: 找不到 internal 模块的 BUILD_STATIC_JAVA_LIBRARY，跳过')
+              sys.exit(0)
+          j += len(inc)
+          block = (
+              mark + '\n'
+              'cm_internal_res_R_stamp := $(call intermediates-dir-for,APPS,org.cyanogenmod.platform-res,,COMMON)/src/R.stamp\n'
+              '$(full_classes_jack): $(cm_internal_res_R_stamp)\n'
+              '$(noshrob_classes_jack): $(cm_internal_res_R_stamp)\n'
+              '$(full_classes_compiled_jar): $(cm_internal_res_R_stamp)\n'
+              '$(built_dex_intermediate): $(cm_internal_res_R_stamp)\n'
+          )
+          open(p, 'w', encoding='utf-8', errors='surrogateescape').write(s[:j] + '\n' + block + s[j:])
+          print('已补依赖边: ' + p)
+          PYEOF
+          echo "--- 补丁结果 ---"
+          grep -n -A5 'internal R.java dep fix' "$CMSDK" || true
+
       # 用 restore/save 拆开写，不用 actions/cache@v4 的自动保存：
       # 自动保存只在 job 成功时才写，而我们现在每轮都挂在半路，
       # 于是 "Post Setup ccache" 每次都是 skipped，缓存从来没落过盘，
@@ -266,46 +311,53 @@ jobs:
           if [ -z "$TARGET" ]; then TARGET=systemimage; fi
           echo "编译目标: $TARGET"
 
+          # ----- 先生成 cmsdk 的 R.java（关键！）--------------------------------
+          # CM 14.1 的 vendor/cmsdk/Android.mk 有个历史 bug：
+          # org.cyanogenmod.platform.internal 把 4 个由 aapt 生成的 R.java /
+          # Manifest.java 列进 LOCAL_INTERMEDIATE_SOURCES，却没给它们挂依赖边。
+          # 对比同文件里 org.cyanogenmod.platform 模块（第 88-89 行）是挂了
+          #   $(full_classes_compiled_jar): $(cm_framework_res_R_stamp)
+          #   $(built_dex_intermediate):  $(cm_framework_res_R_stamp)
+          # 的，internal 模块只写了 `$(full_target): $(cm_framework_built) $(gen)`。
+          #
+          # 更糟的是 AOSP 的 static_java_library.mk 只给 full_classes_jack 挂了
+          # **本模块**的 R_file_stamp，不含这条跨模块依赖。Jack 一启用，产物
+          # 就是 classes.jack（full_classes_jack），依赖边彻底丢失：
+          #   Property 'jack.source': file '.../org.cyanogenmod.platform-res_intermediates/
+          #   src/.../R.java' does not exist
+          # 这是 100% 必现，重试不会有用（前一轮 run 44970147469 重试 3 次、
+          # 每次 11 秒同样错误已经证实）。
+          #
+          # 修法：主构建前先把提供这些 R.java 的模块单独编一遍，让文件先落地。
+          # 之后 ninja 编 internal 时文件已在，Jack 就不会报 does not exist。
+          # 这个模块是纯 Java + 资源，十几秒就好，不算浪费。
+          if [ "$TARGET" = "systemimage" ]; then
+            echo "===== 预构建 org.cyanogenmod.platform-res（生成 R.java）====="
+            set +e
+            mka org.cyanogenmod.platform-res -j$(nproc --all) 2>&1 \
+              | stdbuf -oL tee /tmp/preres.log | tail -40
+            prc=${PIPESTATUS[0]}
+            set -e
+            echo "预构建返回码: $prc"
+            echo "--- 生成的 R.java ---"
+            find out/target/common/obj/APPS/org.cyanogenmod.platform-res_intermediates/src \
+                 -name 'R.java' -o -name 'Manifest.java' 2>/dev/null | head -20 || true
+            # 预构建失败不直接退出：可能只是模块名在这个 manifest 下略有不同，
+            # 主构建照样跑，若真缺文件会在下面按原错误失败，日志一样可诊断。
+          fi
+
           # 不要再接 `tail`：tail 要读完全部输入才输出，等于把 90k 行编译
           # 输出全憋到最后，网页上看就是卡住不动。这里改成实时透传——
           # 进度行（[ 12% 3456/90573]）每涨 2% 打一条，其余行原样输出，
           # 完整日志仍然落在 /tmp/build.log 供失败时分析。
-          run_build() {
-            mka $TARGET -j$(nproc --all) 2>&1 \
-              | stdbuf -oL tee /tmp/build.log \
-              | awk 'BEGIN{last=-2} {if ($0 ~ /^\[ *[0-9]+%/) {match($0,/[0-9]+%/); p=substr($0,RSTART,RLENGTH-1)+0; if (p>=last+2) {print; fflush(); last=p} next} print; fflush()}'
-            return ${PIPESTATUS[0]}
-          }
-
-          # Android 7.1 的 Jack 有个构建顺序竞争：
-          #
-          #   FAILED: .../org.cyanogenmod.platform.internal_intermediates/classes.jack
-          #   4 errors during configuration:
-          #     Property 'jack.source': file '.../org.cyanogenmod.platform-res_intermediates/
-          #     src/cyanogenmod/platform/Manifest.java' does not exist
-          #
-          # Jack 拿到的 source list 里带着由 aapt 生成的 R.java / Manifest.java，
-          # 但高并发下 aapt 还没落地它就开编了。7.1 的 makefile 没给这条边加
-          # 依赖，所以这是必现的偶发失败，不是代码问题。
-          # 这些文件是增量产物，重跑一次就存在了——比改 AOSP 的 Java 规则便宜得多。
-          attempt=1
-          while :; do
-            echo "===== 编译尝试 $attempt ====="
-            set +e
-            run_build
-            rc=$?
-            set -e
-            [ "$rc" = "0" ] && break
-            cp -f /tmp/build.log /tmp/build.log.$attempt 2>/dev/null || true
-            if [ "$attempt" -ge 3 ]; then break; fi
-            if grep -q "Property 'jack.source'" /tmp/build.log && \
-               grep -q "does not exist" /tmp/build.log; then
-              echo "===== Jack 抢跑（生成的 R.java 还没落地），重试 ====="
-              attempt=$((attempt + 1))
-              continue
-            fi
-            break
-          done
+          # 注意用 set +e 包住：GitHub 默认 shell 带 -e -o pipefail，
+          # 不包的话 mka 一失败就当场退出，下面的失败诊断根本打印不出来。
+          set +e
+          mka $TARGET -j$(nproc --all) 2>&1 \
+            | stdbuf -oL tee /tmp/build.log \
+            | awk 'BEGIN{last=-2} {if ($0 ~ /^\[ *[0-9]+%/) {match($0,/[0-9]+%/); p=substr($0,RSTART,RLENGTH-1)+0; if (p>=last+2) {print; fflush(); last=p} next} print; fflush()}'
+          rc=${PIPESTATUS[0]}
+          set -e
 
           if [ "$rc" != "0" ]; then
             echo "===== 失败目标清单 ====="
