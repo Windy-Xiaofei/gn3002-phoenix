@@ -114,7 +114,10 @@ jobs:
 
           # --depth=1 只拉当前提交，能把 .repo 从 ~40GB 压到 ~15GB
           repo init -u https://github.com/CyanogenMod/android.git -b cm-14.1 --depth=1
-          repo sync -c -j$(( $(nproc --all) + 4 )) --force-sync --no-clone-bundle --no-tags --optimized-fetch
+          # repo sync 是网络 I/O 密集，不是 CPU 密集：实测 nproc=4 的 runner 上
+          # -j8（旧值 nproc+4）要 196s。提到 -j16 让更多 git 并行下载，
+          # 4 核完全喂得饱 16 路网络请求；--fail-fast 让失败立刻暴露不空等。
+          repo sync -c -j16 --force-sync --no-clone-bundle --no-tags --optimized-fetch --fail-fast
           df -h /
 
 
@@ -253,6 +256,50 @@ jobs:
                   print('[init] 已加 on fs / mount_all /fstab.mt6735: ' + ir)
           else:
               print('[init] 警告: 找不到 ' + ir)
+
+          # ---- 补丁 2c: fstab 改裸设备路径 ----------------------------------
+          # 实测 last_kmsg: mount_all 已执行，但
+          #   fs_mgr: Failed to mount ... on /dev/block/platform/mtk-msdc.0/by-name/system
+          #           at /system ... error: No such file or directory
+          # adb 在 TWRP 下确认 /dev/block/platform 目录根本不存在——这颗 MTK 3.10
+          # + 7.1 ueventd 只暴露裸块节点 /dev/block/mmcblk0pXX，没有 by-name 符号链接。
+          # TWRP 的 /proc/mounts 也是用 mmcblk0p21=/cache、mmcblk0p22=/data 挂载的。
+          # 分区号交叉验证：
+          #   p20 = 0xC0000000 = scatter 里 system 的 partition_size（3GB）
+          #   p21 = cache、p22 = userdata（TWRP /proc/mounts 实测）
+          # 整套覆写（幂等）：内容与本地验证镜像 dist/.../boot-rawpart.img 里的
+          # fstab 完全一致。protect1/protect2/nvdata 是 wait,check 非致命分区，
+          # 不写进来，避免 mount_all 阶段无谓的 ENOENT 噪音；framework 起来后
+          # 需要时再按裸设备号逐个加回。
+          fb = ROM + '/device/gionee/gbl7356/rootdir/fstab.mt6735'
+          if os.path.isfile(fb):
+              s = open(fb, encoding='utf-8', errors='surrogateescape').read()
+              mark = '# [gn3002] raw partition paths'
+              if mark in s:
+                  print('[fstab] 已打过裸设备补丁，跳过')
+              else:
+                  # 用列表拼装，避免 YAML `run: |` 块里出现顶格行（会破坏 YAML 结构）。
+                  fstab_lines = [
+                      '# Android fstab — Gionee GN3002 (mt6735) — LineageOS 14.1',
+                      '# [gn3002] raw partition paths',
+                      '# 裸设备路径：本机 3.10 内核 + 7.1 ueventd 不生成 /dev/block/platform/.../by-name 符号链接',
+                      '# 分区号来自 /proc/partitions + scatter 交叉确认：',
+                      '#   p20 = system   (0xC0000000, 与 scatter system partition_size 完全一致)',
+                      '#   p21 = cache    (/proc/mounts 实测)',
+                      '#   p22 = userdata (/proc/mounts 实测)',
+                      '#<src>                       <mnt_point>  <type>  <mnt_flags and options>                                  <fs_mgr_flags>',
+                      '/dev/block/mmcblk0p20        /system      ext4    ro,barrier=1                                             wait',
+                      '/dev/block/mmcblk0p22        /data        ext4    noatime,nosuid,nodev,noauto_da_alloc,discard             wait,check',
+                      '/dev/block/mmcblk0p21        /cache       ext4    noatime,nosuid,nodev,noauto_da_alloc,discard             wait,check',
+                      '/devices/mtk-msdc.0/11230000.MSDC0                     auto          vfat    defaults                     voldmanaged=sdcard0:emmc@intsd,noemulatedsd',
+                      '/devices/mtk-msdc.0/11240000.MSDC1                     auto          vfat    defaults                     voldmanaged=sdcard1:auto',
+                      '/devices/platform/mt_usb                               auto          vfat    defaults                     voldmanaged=usbotg:auto',
+                  ]
+                  fstab = '\n'.join(fstab_lines) + '\n'
+                  open(fb, 'w', encoding='utf-8', errors='surrogateescape').write(fstab)
+                  print('[fstab] 已改裸设备路径: ' + fb)
+          else:
+              print('[fstab] 警告: 找不到 ' + fb)
 
           # ---- 补丁 3: sepolicy v29（3.10 内核只支持 15-29）------------------
           # CM 14.1 的 checkpolicy 默认产出 sepolicy v30，MTK 3.10 内核只支持
