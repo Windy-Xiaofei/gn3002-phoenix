@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: 'ninja 目标：systemimage 全量；bootimage 只打 boot.img（调 ramdisk/cmdline 时用，快很多）'
+        description: 'ninja 目标：bootimage 只打 boot.img（含 sepolicy/ramdisk，验证 SELinux 用这个，快很多）；systemimage 全量'
         required: false
         default: systemimage
   push:
@@ -238,8 +238,20 @@ jobs:
           bc = ROM + '/device/gionee/gbl7356/BoardConfig.mk'
           if os.path.isfile(bc):
               s = open(bc, encoding='utf-8', errors='surrogateescape').read()
-              if 'POLICYVERS' in s:
-                  print('[board] 已有 POLICYVERS，跳过')
+              # 注意：不能用 `'POLICYVERS' in s` 判断——cm-14.1 的 BoardConfig
+              # 注释里大段提到 POLICYVERS（解释为什么不需要设），会导致误判跳过。
+              # 必须找真正生效的赋值行（行首 POLICYVERS，允许前导空白）。
+              import re
+              # 匹配整行赋值（含数值），只认行首的赋值，跳过注释行
+              m = re.search(r'(?m)^(\s*POLICYVERS\s*:?=\s*)(\d+)(\s*(?:#.*)?)$', s)
+              if m:
+                  old = m.group(2)
+                  if old == '29':
+                      print('[board] POLICYVERS 已是 29，跳过')
+                  else:
+                      s = s[:m.start()] + m.group(1) + '29' + m.group(3) + s[m.end():]
+                      open(bc, 'w', encoding='utf-8', errors='surrogateescape').write(s)
+                      print('[board] 覆盖 POLICYVERS %s -> 29' % old)
               else:
                   s += ('\n# [gn3002] 3.10 内核只支持 policy v15-29，默认 v30 开不了机\n'
                         'POLICYVERS := 29\n')
