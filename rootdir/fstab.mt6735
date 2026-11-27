@@ -54,13 +54,26 @@
 #   返回 FS_MGR_MNTALL_DEV_NOT_ENCRYPTABLE(0)，启动链不会因为一个分区断掉。
 #   注意这只影响"是否拖死整体"，挂不上照样挂不上，checkpoint 仍会暴露问题。
 #
-# 五、protect1 / protect2 / nvdata 暂不挂
+# 五、/cache 必须留在这里（2026-11-27 实测教训）
+#   曾经为了"只挂一次"，把 /cache 从 fstab 删掉，改成由 init 的 on early-fs
+#   显式 mount。实测结果：那次 mount 失败（init 的 mount 内置命令失败时**完全
+#   静默**，只返回 -1），于是整个启动过程中 /cache 从未挂载，checkpoint 和
+#   bootlog 的日志全写进了 ramdisk 的内存 /cache 目录，重启即失 —— 表面上
+#   就是"/cache/gn3002 不存在"，几乎无法反推原因。
+#   现在双保险：early-fs 先试一次（快、无副作用），失败也不要紧，这里让
+#   fs_mgr 再挂一次。两边都成功时后者拿 EBUSY，因带 nofail 不计数，无害。
+#   cache 带 check：fs_mgr 会跑 /system/bin/e2fsck -f -y（400 MB，很快），
+#   能修复反复硬断电留下的 dirty journal —— 这很可能正是 early-fs 那次
+#   mount 失败的原因。
+#
+# 六、protect1 / protect2 / nvdata 暂不挂
 #   都是 wait,check 的“必须挂载”项，但 bring-up 阶段不需要；等 framework 起来、
 #   要 WiFi/BT 校准时再按裸设备号逐个加回（p18/p19 那块）。
 #
 #<src>                    <mnt_point>  <type>  <mnt_flags and options>                        <fs_mgr_flags>
 /dev/block/mmcblk0p20    /system      ext4    ro,barrier=1                                     wait,nofail
-/dev/block/mmcblk0p22    /data        ext4    noatime,nosuid,nodev,noauto_da_alloc,discard     wait,nofail
+/dev/block/mmcblk0p22    /data        ext4    noatime,nosuid,nodev,noauto_da_alloc,discard     wait,check,nofail
+/dev/block/mmcblk0p21    /cache       ext4    noatime,nosuid,nodev,noauto_da_alloc,discard     wait,check,nofail
 
 # 外部存储：sdcard0 是内置（emmc@intsd），sdcard1 是 TF 卡
 /devices/mtk-msdc.0/11230000.MSDC0                     auto          vfat    defaults                                 voldmanaged=sdcard0:emmc@intsd,noemulatedsd

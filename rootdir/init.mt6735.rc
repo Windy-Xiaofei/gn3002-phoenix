@@ -71,13 +71,21 @@ service mtkbt /system/vendor/bin/mtkbt
 # early-fs（独占）：先挂 /cache，把可观测通道建起来
 #
 # mount 的 wait 关键字 = wait_for_file(dev, 5s)（builtins.cpp do_mount）。
-# /cache 用裸设备 mmcblk0p21（400 MB ext4，TWRP 实测可挂）。
+#
+# ★ 2026-11-27 实测教训：init 的 mount 命令失败时**完全静默**（只返回 -1，
+#   不写任何日志），而失败会中止本段剩余命令 —— 于是 checkpoint 全丢，
+#   现象只是"/cache/gn3002 不存在"，无法反推原因。
+#   因此：每一步都用 write /dev/kmsg 记一条，内核日志是唯一必然可读的通道
+#   （即使 /cache 没挂上也能看到）。另外 /cache 已加回 fstab 由 fs_mgr 兜底，
+#   所以这里失败也不致命。
 # ------------------------------------------------------------------------------
 on early-fs
+    write /dev/kmsg "gn3002: early-fs entered"
     mount ext4 /dev/block/mmcblk0p21 /cache wait
-    wait /dev/block/mmcblk0p20 15
+    write /dev/kmsg "gn3002: mount /cache attempted"
     mkdir /cache/gn3002 0770 root root
     write /cache/gn3002/r0-early-fs-cache-mounted.txt ok
+    write /dev/kmsg "gn3002: checkpoint r0 written"
 
 # ------------------------------------------------------------------------------
 # fs（独占）：真正的挂载（7.1 的挂载入口，必须写在设备 rc 里）
@@ -97,7 +105,9 @@ on early-fs
 # （fstab 里两个分区都带 nofail，就是为了让 error_count 保持 0，见 B15。）
 # ------------------------------------------------------------------------------
 on fs
+    write /dev/kmsg "gn3002: fs entered, calling mount_all"
     mount_all /fstab.mt6735
+    write /dev/kmsg "gn3002: mount_all returned ok"
     write /cache/gn3002/r1-fs-mount-all-returned.txt ok
 
 # ------------------------------------------------------------------------------
@@ -108,7 +118,9 @@ on fs
 # late-fs 在 post-fs 之后触发，此时 logd 已起、/system 属性即将/已经加载。
 # ------------------------------------------------------------------------------
 on late-fs
+    write /dev/kmsg "gn3002: late-fs entered"
     mount ext4 /dev/block/mmcblk0p20 /system ro wait
+    write /dev/kmsg "gn3002: late-fs system mount attempted"
     write /cache/gn3002/r3-late-fs-system-mounted.txt ok
 
 # ------------------------------------------------------------------------------
@@ -155,9 +167,14 @@ on boot
 on nonencrypted
     # 只有 mount_all 正常返回才会触发这里，class_start main 就在本动作里
     # （AOSP init.rc 的 on nonencrypted 段）。文件出现 = /system 与 /data 都挂上了。
+    # 注意 AOSP 该段第一条是 update_verifier，而本镜像的 /system/bin 里没有它
+    # （已核对 system.img），所以会看到 "cannot find ... disabling exec 2"。
+    # 那条日志无害，但它是"nonencrypted 确实被触发"的证据。
+    write /dev/kmsg "gn3002: nonencrypted triggered, zygote starting"
     write /cache/gn3002/r7-nonencrypted.txt ok
 
 on property:init.svc.zygote=running
+    write /dev/kmsg "gn3002: zygote running"
     write /cache/gn3002/r8-zygote-running.txt ok
 
 # ------------------------------------------------------------------------------
