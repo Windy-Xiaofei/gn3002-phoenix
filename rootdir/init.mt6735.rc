@@ -1,54 +1,46 @@
-# Gionee GN3002 (mt6735) — 设备 init 配置
+# Gionee GN3002 (mt6735) — 设备 init 配置 — LineageOS 14.1
 #
-# 8.1 的 init 在解析完 AOSP 的 /init.rc 之后会 import
-#   /vendor/etc/init/hw/init.${ro.hardware}.rc
+# 位置：/init.mt6735.rc（ramdisk 根）
+#
+# 7.1 的 init 在解析完 AOSP 的 /init.rc 之后会 import
+#   /init.${ro.hardware}.rc
 # 也就是本文件（ro.hardware = mt6735）。
+#
+# 8.1 的路径是 /vendor/etc/init/hw/init.${ro.hardware}.rc（多两层目录）；
+# 7.1 直接在 ramdisk 根。写错位置的表现是「设备服务一个都没起」，
+# 但系统本身照常开机，非常难发现。
 #
 # 这里刻意只放「不阻塞开机」的最小服务集。原厂 init.mt6735.rc 有 1543 行、
 # 几十个服务（modem / wifi / bt / aee / xlog / touch ...），一次性全搬过来
-# 只会在 bring-up 阶段制造噪音：任何一个依赖 5.1 专属节点或二进制的服务
-# 反复重启，都会把真正的启动问题淹掉。
-# 正确的做法是先让 framework 起来，再按 logcat / dmesg 的实际报错逐个加回。
+# 只会在 bring-up 阶段制造噪音。正确做法是先让 framework 起来，
+# 再按 logcat / dmesg 的实际报错逐个加回。
+#
+# ★ 写这份 rc 的两条铁律
+#   1. init 的动作是「某条命令失败就中止该动作剩余命令」。
+#      所以每个动作里最关键的挂载命令放第一条，可能失败的辅助命令放后面。
+#   2. 命令名 / 参数个数必须严格合法，否则该行被解析器静默跳过。
+#      改动后跑：python tools/check_init_rc.py phoenix/rootdir/init.mt6735.rc
 
 # ------------------------------------------------------------------------------
-# NVRAM
-#
-# MTK 的 MAC 地址、射频校准参数都存在 nvram 分区，由这个守护进程对外提供。
-# WiFi / 蓝牙 / modem 都依赖它，必须先起来。
+# NVRAM / 温控 / 电量计 / 蓝牙（原厂 blobs）
 # ------------------------------------------------------------------------------
-service nvram_daemon /vendor/bin/nvram_daemon
+service nvram_daemon /system/vendor/bin/nvram_daemon
     class main
     user root
     group system
     oneshot
 
-# ------------------------------------------------------------------------------
-# 温控
-#
-# MTK 的 thermal_manager 读 /system/etc/.tp/thermal.conf 决定降频策略。
-# 没有它短时间不会死，但长时间跑会真的过热。
-# ------------------------------------------------------------------------------
-service thermal_manager /vendor/bin/thermal_manager
+service thermal_manager /system/vendor/bin/thermal_manager
     class main
     user root
     oneshot
 
-# ------------------------------------------------------------------------------
-# 电量计
-#
-# 常驻服务，直接读 PMIC 的库仑计。TWRP 里电量不准就是因为没有它。
-# ------------------------------------------------------------------------------
-service fuelgauged /vendor/bin/fuelgauged
+service fuelgauged /system/vendor/bin/fuelgauged
     class main
     user system
     group system
 
-# ------------------------------------------------------------------------------
-# 蓝牙
-#
-# 走 MTK 私有 socket（bt.int.adp / bt.a2dp.stream），class late_start 不阻塞开机。
-# ------------------------------------------------------------------------------
-service mtkbt /vendor/bin/mtkbt
+service mtkbt /system/vendor/bin/mtkbt
     class late_start
     socket bt.int.adp dgram 660 bluetooth net_bt
     socket bt.a2dp.stream dgram 660 bluetooth net_bt
@@ -56,21 +48,97 @@ service mtkbt /vendor/bin/mtkbt
     group system vpn net_admin inet net_raw net_bt bluetooth net_bt_admin net_bt_stack sdcard_r
 
 # ------------------------------------------------------------------------------
+# early-fs：先挂 /cache，把可观测通道建起来
+#
+# early-fs 由 AOSP /init.rc 的 on late-init 触发（trigger early-fs），早于 fs。
+# mount 的 wait 关键字 = wait_for_file(dev, 5s)（builtins.cpp do_mount）。
+# /cache 用裸设备 mmcblk0p21（400 MB ext4，TWRP 实测可挂）。
+# ------------------------------------------------------------------------------
+on early-fs
+    mount ext4 /dev/block/mmcblk0p21 /cache wait
+    wait /dev/block/mmcblk0p20 15
+    mkdir /cache/gn3002 0770 root root
+    write /cache/gn3002/r0-cache-mounted.txt ok
+
+# ------------------------------------------------------------------------------
+# fs：真正的挂载（7.1 的挂载入口，必须写在设备 rc 里）
+#
+# AOSP /init.rc 的 on fs 段里只有一句注释：
+#   # Mount fstab in init.{$device}.rc by mount_all command.
+# 即 7.1 约定由设备自己的 init.<hw>.rc 负责挂载；AOSP 自己没有 mount_all
+# （这点和 8.1 完全相反 —— 8.1 的挂载全在 init 的 C++ 里）。
+# 两边都以为对方挂 → 谁都没挂 → /system 空 → 卡第一屏。
+#
+# device 节点一定已经在了：AOSP init main() 在 early-init 之后先跑
+# wait_for_coldboot_done_action（等 ueventd 建出 /dev/.coldboot_done），
+# 然后才 queue init / late-init；而 handle_block_device_event() 对每个块设备
+# 无条件建 /dev/block/<name>。所以 mmcblk0p20 在 fs 阶段必然存在。
+#
+# mount_all 失败 = 沉默卡第一屏：只有它正常返回 FS_MGR_MNTALL_DEV_NOT_ENCRYPTABLE，
+# init 才会 queue "nonencrypted"，而 class_start main（zygote、servicemanager、
+# surfaceflinger 全在 main 类）就在那个动作里。
+# 所以 mount_all 必须是本动作第一条，前面不许有任何可能失败的命令。
+# ------------------------------------------------------------------------------
+on fs
+    mount_all /fstab.mt6735
+    write /cache/gn3002/r1-mount-all-returned.txt ok
+
+# ------------------------------------------------------------------------------
+# post-fs：兜底再挂一次 /system
+#
+# 若 mount_all 没挂上 /system，这里直接补一次；已挂上会 EBUSY。
+# 所以这条放本动作最后（失败会中止本动作剩余命令）。
+# ------------------------------------------------------------------------------
+on post-fs
+    write /cache/gn3002/r2-post-fs.txt ok
+    mount ext4 /dev/block/mmcblk0p20 /system ro wait
+
+# ------------------------------------------------------------------------------
 # post-fs-data
 #
 # MTK 的守护进程习惯把运行时状态写在 /data 下的固定目录，先建出来。
 # ------------------------------------------------------------------------------
 on post-fs-data
+    write /cache/gn3002/r3-post-fs-data.txt ok
     mkdir /data/nvram 0771 root root
     mkdir /data/nvram/APCFG 0771 root root
     mkdir /data/misc/wifi 0770 wifi wifi
     mkdir /data/misc/bluetooth 0770 bluetooth bluetooth
 
 # ------------------------------------------------------------------------------
-# 权限
+# boot：权限
 #
 # 触摸是汇顶 FT8606 / 敦泰，走 input 子系统；PMIC 的充电节点要能被 framework 读。
 # ------------------------------------------------------------------------------
 on boot
+    write /cache/gn3002/r4-boot.txt ok
     chown system system /proc/mtk_battery_cmd
     chmod 0660 /proc/mtk_battery_cmd
+    # 7.1 的外部存储走 FUSE（内核没有 sdcardfs），把 fuse 设备放开
+    chmod 0666 /dev/fuse
+
+on nonencrypted
+    # 只有 mount_all 正常返回才会触发这里，class_start main 就在本动作里
+    # （AOSP init.rc 的 on nonencrypted 段）。文件出现 = /system 与 /data 都挂上了。
+    write /cache/gn3002/r5-nonencrypted.txt ok
+
+on property:init.svc.zygote=running
+    write /cache/gn3002/r6-zygote-running.txt ok
+
+# ------------------------------------------------------------------------------
+# 日志落盘（★ 本项目最重要的调试设施）
+#
+# last_kmsg 靠内核 ram console（64 KB 环形缓冲），硬断电就整块丢；
+# 本项目已连续两次只拿到全 NUL（正文只剩 "header may be corrupted"）。
+# 所以改从 /cache 取日志：只要 /system 挂上了，本服务每 5 秒把
+# dmesg / logcat / ps / getprop 刷进 /cache/gn3002/，覆盖开机后约 100 秒。
+#
+# 若 /system 没挂上，init 找不到 /system/bin/sh，会在内核日志里留
+# "cannot execute"，且 /cache/gn3002/ 下不会有 dmesg-*.txt
+# —— 「没有这些文件」本身就是诊断结论。
+# ------------------------------------------------------------------------------
+service bootlog /system/bin/sh /sbin/bootlog.sh
+    class core
+    user root
+    group root system log
+    oneshot

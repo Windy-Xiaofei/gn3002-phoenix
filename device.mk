@@ -139,18 +139,32 @@ PRODUCT_COPY_FILES += \
     $(DEVICE_ROOT)/rootdir/init.mt6735.rc:$(TARGET_COPY_OUT_VENDOR)/etc/init/hw/init.mt6735.rc \
     $(DEVICE_ROOT)/rootdir/fstab.mt6735:$(TARGET_COPY_OUT_VENDOR)/etc/fstab.mt6735 \
     $(DEVICE_ROOT)/rootdir/fstab.mt6735:root/fstab.mt6735 \
-    $(DEVICE_ROOT)/rootdir/ueventd.mt6735.rc:root/ueventd.mt6735.rc
+    $(DEVICE_ROOT)/rootdir/ueventd.mt6735.rc:root/ueventd.mt6735.rc \
+    $(DEVICE_ROOT)/rootdir/sbin/bootlog.sh:root/sbin/bootlog.sh \
+    $(DEVICE_ROOT)/rootdir/init.mt6735.rc:root/init.mt6735.rc
 
-# 上面两条 root/ 是打进 ramdisk 的，位置不能改：
+# 上面几条 root/ 是打进 ramdisk 的，位置不能改：
+#
+#   root/init.mt6735.rc
+#     7.1（14.1）：init 在解析完 AOSP /init.rc 后 import /init.${ro.hardware}.rc，
+#                 它只认 ramdisk 根这一份。少了它，设备服务一个都不起、
+#                 mount_all 也没人调 —— 表现就是静默卡第一屏。
+#     8.1（15.1）：改读 /vendor/etc/init/hw/init.${ro.hardware}.rc，所以两份都拷。
 #
 #   root/fstab.mt6735
-#     Android 8.1 的 fs_mgr_read_fstab_default()（core/fs_mgr/fs_mgr_fstab.cpp:708）
-#     按 /odm/etc/fstab.<hw> → /vendor/etc/fstab.<hw> → /fstab.<hw> 的顺序找，
-#     前两个在 init 第一阶段（此时 /system 还没挂上，/vendor 只是断链）根本
-#     访问不到，只有 ramdisk 根目录那份能命中。缺了它 init 第一阶段的
-#     fs_mgr_mount_all() 直接失败，连 /system 都挂不上，开机停在 logo。
-#     8.1 的挂载已经全部挪到 init 的 C++ 里，init.rc 里根本没有 mount_all，
-#     所以不能指望从 /vendor/etc 读。
+#     7.1：fs_mgr_read_fstab_default() 只按 /fstab.<hw> 找，也就是这一份。
+#     8.1：fs_mgr_read_fstab_default()（core/fs_mgr/fs_mgr_fstab.cpp:708）按
+#          /odm/etc/fstab.<hw> → /vendor/etc/fstab.<hw> → /fstab.<hw> 找，
+#          前两个在 init 第一阶段（此时 /system 还没挂上，/vendor 只是断链）
+#          根本访问不到，仍只有 ramdisk 根这份能命中。
+#     缺了它 mount_all 直接失败，/system 挂不上，开机停在 logo。
+#
+#   root/sbin/bootlog.sh
+#     开机日志落盘脚本：/proc/last_kmsg 是内核 ram console 的 64 KB 环形缓冲，
+#     硬断电即丢失（本项目实测拿到过两次全 NUL），所以改成把 dmesg / logcat
+#     写进 /cache/gn3002/。由设备 rc 以
+#         service bootlog /system/bin/sh /sbin/bootlog.sh
+#     方式执行，不依赖可执行位，但内容必须是 LF 换行。
 #
 #   root/ueventd.mt6735.rc
 #     ueventd.cpp:230-242 读的是 /ueventd.rc、/vendor/ueventd.rc、

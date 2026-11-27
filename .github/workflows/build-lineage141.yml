@@ -42,6 +42,24 @@ jobs:
           # 设备树在 cm-14.1 分支上（工作流本身必须在 main 才能被 gh 识别）
           ref: cm-14.1
 
+      # 再取一份 main 的 ramdisk 关键文件作为唯一真相源。
+      # 背景：设备树从 cm-14.1 取，但 init.mt6735.rc / fstab.mt6735 这类
+      # 开机链关键文件一旦两个分支不一致，就会出现「本地验证过的镜像和 CI 产出的
+      # 不是一回事」，排查时非常费时间（已经踩过）。
+      # 这里用 main（= 触发本次构建的 ref）覆盖 4 个文件：
+      #   rootdir/init.mt6735.rc   设备 init 规则（含 on early-fs 挂 /cache）
+      #   rootdir/fstab.mt6735     裸设备 fstab
+      #   rootdir/sbin/bootlog.sh  开机日志落盘脚本
+      #   device.mk                需要带 root/sbin/bootlog.sh 的 PRODUCT_COPY_FILES
+      # 文件不存在时只告警不失败（旧分支触发时 main 上可能还没有这些文件）。
+      - name: Checkout authoritative ramdisk files (main)
+        uses: actions/checkout@v4
+        with:
+          path: dtmain
+          fetch-depth: 1
+          ref: main
+        continue-on-error: true
+
       # LineageOS 全量源码 + out 目录大概 90GB，runner 的 84GB 盘必须尽量腾空。
       # 这些预装组件对 Android 编译毫无用处，删掉能多出 20GB 以上。
       - name: Free disk space
@@ -127,6 +145,21 @@ jobs:
         run: |
           mkdir -p rom/device/gionee/gbl7356
           rsync -a --exclude='.git' dt/ rom/device/gionee/gbl7356/
+
+          # main 上的 ramdisk 关键文件覆盖过来（见上面 "Checkout authoritative
+          # ramdisk files" 的说明）。CM-14.1 分支上这些文件可能是旧版。
+          echo "--- 用 main 覆盖 ramdisk 关键文件 ---"
+          for f in rootdir/init.mt6735.rc rootdir/fstab.mt6735 \
+                   rootdir/sbin/bootlog.sh device.mk; do
+            if [ -f "dtmain/$f" ]; then
+              mkdir -p "rom/device/gionee/gbl7356/$(dirname $f)"
+              cp -a "dtmain/$f" "rom/device/gionee/gbl7356/$f"
+              echo "  已覆盖 $f"
+            else
+              echo "  警告: dtmain/$f 不存在，沿用 cm-14.1 的版本"
+            fi
+          done
+
           echo "--- device tree ---"
           ls -la rom/device/gionee/gbl7356/
           du -sh rom/device/gionee/gbl7356/blobs 2>/dev/null || echo "警告: blobs 缺失"
@@ -233,73 +266,100 @@ jobs:
           else:
               print('[netd] 警告: 找不到 ' + sc)
 
-          # ---- 补丁 2b: init.mt6735.rc 补 mount_all --------------------------
-          # 卡第一屏、/system/bin/sh 找不到、vold/logd "Service not found"：
-          # 根因是 /system 根本没挂载。
-          # AOSP 7.1 的 /init.rc 里 `on fs` 段的 mount_all 只是**注释**：
-          #   # Mount fstab in init.{$device}.rc by mount_all command.
-          # 即 7.1 约定由设备自己的 init.${ro.hardware}.rc 负责挂载。
-          # 但我们的 init.mt6735.rc 注释却写"不需要写 mount_all，AOSP init.rc 里有"，
-          # 两边都以为对方会挂 -> 谁都没挂 -> /system 空 -> zygote 起不来。
-          # 修法：在设备 rc 里显式加 on fs + mount_all /fstab.mt6735。
+          # ---- 补丁 2b: 校验 init.mt6735.rc 的挂载链完整性 --------------------
+          # 7.1 的挂载分工和前几版理解都不一样，最终结论（三个来源交叉确认）：
+          #   1. AOSP /init.rc 的 on fs 段里只有**注释**
+          #        # Mount fstab in init.{$device}.rc by mount_all command.
+          #      所以必须由设备 rc 调 mount_all —— 两边都不写就谁都没挂。
+          #   2. mount_all 失败 = 沉默卡第一屏：只有它正常返回
+          #      FS_MGR_MNTALL_DEV_NOT_ENCRYPTABLE，init 才 queue "nonencrypted"，
+          #      而 class_start main（zygote/servicemanager/surfaceflinger 都在
+          #      main 类）就在那个动作里。所以 rc 里 mount_all 必须是 on fs 第一条，
+          #      前面不许有任何可能失败的命令。
+          #   3. /cache 由 on early-fs 自己挂（要先建可观测通道，把上一轮
+          #      last_kmsg 抢救进持久分区），所以 fstab 里不能再有 cache 行。
+          # 这里不再"补"文件内容（main 的权威版本已经覆盖过来），只做校验：
+          # 缺任何一项就 fail，别让一个静默卡第一屏的镜像又被刷进手机。
           ir = ROM + '/device/gionee/gbl7356/rootdir/init.mt6735.rc'
           if os.path.isfile(ir):
               s = open(ir, encoding='utf-8', errors='surrogateescape').read()
-              if 'mount_all /fstab.mt6735' in s:
-                  print('[init] 已有 mount_all，跳过')
-              else:
-                  block = ('\n# [gn3002] 7.1 必须由设备 rc 挂载；AOSP init.rc 里只是注释\n'
-                           'on fs\n'
-                           '    mount_all /fstab.mt6735\n')
-                  s = s + block
-                  open(ir, 'w', encoding='utf-8', errors='surrogateescape').write(s)
-                  print('[init] 已加 on fs / mount_all /fstab.mt6735: ' + ir)
+              # 只认**生效行**：本文件注释里大段解释挂载链，用 `in s` 判断
+              # 会被注释骗过（本项目在 POLICYVERS 上已经踩过一次同样的坑）。
+              active = [ln.split('#', 1)[0].rstrip() for ln in s.split('\n')]
+              active_txt = '\n'.join(active)
+              checks = [
+                  ('on early-fs', '早挂 /cache 的动作'),
+                  ('/dev/block/mmcblk0p21 /cache',
+                   'early-fs 里挂 /cache（mount ext4 /dev/block/mmcblk0p21 /cache wait）'),
+                  ('mount_all /fstab.mt6735', 'mount_all（7.1 唯一挂载入口）'),
+                  ('service bootlog', '开机日志落盘服务'),
+              ]
+              bad = [(k, d) for k, d in checks if k not in active_txt]
+              if bad:
+                  for k, d in bad:
+                      print('[init] 缺项: %s -> %s' % (d, k))
+                  sys.exit('[init] init.mt6735.rc 不完整，拒绝构建')
+              # mount_all 必须排在 on fs 段的第一条（前面不能有可失败命令）
+              fs_sec = (active_txt.split('on fs\n', 1)[1].split('\non ', 1)[0]
+                        if 'on fs\n' in active_txt else '')
+              first = next((ln.strip() for ln in fs_sec.split('\n') if ln.strip()), '')
+              if not first.startswith('mount_all'):
+                  sys.exit('[init] on fs 段第一条命令是 %r，必须是 mount_all' % first)
+              print('[init] 挂载链校验通过（early-fs 挂 cache + fs 首条 mount_all + bootlog）')
           else:
-              print('[init] 警告: 找不到 ' + ir)
+              sys.exit('[init] 找不到 ' + ir)
 
-          # ---- 补丁 2c: fstab 改裸设备路径 ----------------------------------
+          # ---- 补丁 2c: 校验 fstab 用裸设备路径 ------------------------------
           # 实测 last_kmsg: mount_all 已执行，但
           #   fs_mgr: Failed to mount ... on /dev/block/platform/mtk-msdc.0/by-name/system
           #           at /system ... error: No such file or directory
-          # adb 在 TWRP 下确认 /dev/block/platform 目录根本不存在——这颗 MTK 3.10
-          # + 7.1 ueventd 只暴露裸块节点 /dev/block/mmcblk0pXX，没有 by-name 符号链接。
-          # TWRP 的 /proc/mounts 也是用 mmcblk0p21=/cache、mmcblk0p22=/data 挂载的。
+          # 根因（AOSP android-7.1.1_r6 init/devices.cpp 源码确认）：
+          #   get_block_device_symlinks() 只有 uevent 带 PARTNAME= 才建 by-name 软链，
+          #   这颗 MTK 3.10 内核不吐 PARTNAME=，所以 /dev/block/platform 整个不存在；
+          #   而 handle_block_device_event() 对每个块设备无条件建 /dev/block/<name>。
           # 分区号交叉验证：
           #   p20 = 0xC0000000 = scatter 里 system 的 partition_size（3GB）
           #   p21 = cache、p22 = userdata（TWRP /proc/mounts 实测）
-          # 整套覆写（幂等）：内容与本地验证镜像 dist/.../boot-rawpart.img 里的
-          # fstab 完全一致。protect1/protect2/nvdata 是 wait,check 非致命分区，
-          # 不写进来，避免 mount_all 阶段无谓的 ENOENT 噪音；framework 起来后
-          # 需要时再按裸设备号逐个加回。
           fb = ROM + '/device/gionee/gbl7356/rootdir/fstab.mt6735'
           if os.path.isfile(fb):
               s = open(fb, encoding='utf-8', errors='surrogateescape').read()
-              mark = '# [gn3002] raw partition paths'
-              if mark in s:
-                  print('[fstab] 已打过裸设备补丁，跳过')
-              else:
-                  # 用列表拼装，避免 YAML `run: |` 块里出现顶格行（会破坏 YAML 结构）。
-                  fstab_lines = [
-                      '# Android fstab — Gionee GN3002 (mt6735) — LineageOS 14.1',
-                      '# [gn3002] raw partition paths',
-                      '# 裸设备路径：本机 3.10 内核 + 7.1 ueventd 不生成 /dev/block/platform/.../by-name 符号链接',
-                      '# 分区号来自 /proc/partitions + scatter 交叉确认：',
-                      '#   p20 = system   (0xC0000000, 与 scatter system partition_size 完全一致)',
-                      '#   p21 = cache    (/proc/mounts 实测)',
-                      '#   p22 = userdata (/proc/mounts 实测)',
-                      '#<src>                       <mnt_point>  <type>  <mnt_flags and options>                                  <fs_mgr_flags>',
-                      '/dev/block/mmcblk0p20        /system      ext4    ro,barrier=1                                             wait',
-                      '/dev/block/mmcblk0p22        /data        ext4    noatime,nosuid,nodev,noauto_da_alloc,discard             wait,check',
-                      '/dev/block/mmcblk0p21        /cache       ext4    noatime,nosuid,nodev,noauto_da_alloc,discard             wait,check',
-                      '/devices/mtk-msdc.0/11230000.MSDC0                     auto          vfat    defaults                     voldmanaged=sdcard0:emmc@intsd,noemulatedsd',
-                      '/devices/mtk-msdc.0/11240000.MSDC1                     auto          vfat    defaults                     voldmanaged=sdcard1:auto',
-                      '/devices/platform/mt_usb                               auto          vfat    defaults                     voldmanaged=usbotg:auto',
-                  ]
-                  fstab = '\n'.join(fstab_lines) + '\n'
-                  open(fb, 'w', encoding='utf-8', errors='surrogateescape').write(fstab)
-                  print('[fstab] 已改裸设备路径: ' + fb)
+              # 只看**生效行**，不看注释：这份 fstab 的注释里大段解释 by-name
+              # 为什么不存在，用 `'by-name' in s` 判断会误报（这类误判本项目
+              # 已经踩过一次，见 POLICYVERS 那条教训）。
+              active = [ln.split('#', 1)[0].strip()
+                        for ln in s.split('\n')]
+              active = [ln for ln in active if ln]
+              if any('by-name' in ln for ln in active):
+                  sys.exit('[fstab] 生效行里还有 by-name 路径，7.1 上必然 ENOENT')
+              joined = '\n'.join(active)
+              for need in ('/dev/block/mmcblk0p20', '/system',
+                           '/dev/block/mmcblk0p22', '/data'):
+                  if need not in joined:
+                      sys.exit('[fstab] 生效行里缺少 %s' % need)
+              # /cache 必须由 init early-fs 挂；fstab 里再来一条会让 fs_mgr
+              # 对已挂载目标二次 mount 拿 EBUSY，mount_all 整体失败 -> 卡第一屏。
+              for ln in active:
+                  parts = ln.split()
+                  if len(parts) >= 2 and parts[1] == '/cache':
+                      sys.exit('[fstab] 生效行里仍有 /cache 条目；'
+                               '/cache 由 init early-fs 挂，重复挂载会让 '
+                               'mount_all 拿 EBUSY 而整体失败')
+              # system / data 必须带 nofail（B15）：fs_mgr.c 里没写 nofail 的分区
+              # 挂不上会 ++error_count，mount_all 返回 -1；init 收到 255 只打一句
+              # "unexpected error"，不 queue "nonencrypted"，而 class_start main
+              # （zygote / servicemanager / surfaceflinger）就在那里 -> 静默卡第一屏。
+              # 写了 nofail 则只打 "Ignoring failure"，mount_all 返回 0，启动链不断。
+              for ln in active:
+                  parts = ln.split()
+                  if len(parts) >= 5 and parts[1] in ('/system', '/data'):
+                      if 'nofail' not in parts[4]:
+                          sys.exit('[fstab] %s 缺 nofail：该分区挂不上会拖死整个 '
+                                   'mount_all，zygote 永不启动' % parts[1])
+              print('[fstab] 校验通过：裸设备 p20=system / p22=data，'
+                    '均带 nofail，无 cache 行')
           else:
-              print('[fstab] 警告: 找不到 ' + fb)
+              sys.exit('[fstab] 找不到 ' + fb)
+
 
           # ---- 补丁 3: sepolicy v29（3.10 内核只支持 15-29）------------------
           # CM 14.1 的 checkpolicy 默认产出 sepolicy v30，MTK 3.10 内核只支持

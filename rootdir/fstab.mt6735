@@ -1,33 +1,68 @@
-# Android fstab — Gionee GN3002 (mt6735)
+# Android fstab — Gionee GN3002 (mt6735) — LineageOS 14.1
 #
-# 这份文件会装到两个位置，内容必须一致：
-#   /fstab.mt6735         → ramdisk 根目录。init 第一阶段（此时 /system 还没挂）
-#                           只能读到这一份，缺了它挂不上 /system，开机停在 logo。
-#   /vendor/etc/fstab.mt6735 → 第二阶段的回退路径（fs_mgr 的查找顺序里排中间）。
+# 这份文件装到两个位置，内容必须一致：
+#   /fstab.mt6735            → ramdisk 根。7.1 的 init 在 on fs 阶段只能用这份
+#                              （fs_mgr_read_fstab_default 按 /fstab.<hw> 找），
+#                              缺了它 mount_all 直接失败，开机停在第一屏。
+#   /vendor/etc/fstab.mt6735 → 第二阶段回退路径。
 #
-# 分区名来自 scatter：system / userdata / cache / protect1 / protect2 / nvdata。
-# 本机没有独立 vendor 分区，vendor 内容在 system/vendor 里。
+# [gn3002] raw partition paths
 #
-# 暂时不启用强制加密（FBE/FDE），metadata 分区留空不用。
+# 一、为什么用裸设备而不是 by-name
+#   AOSP 7.1 的 init/devices.cpp 里：
+#     handle_block_device_event()  —— 对每个块设备**无条件**建 /dev/block/<name>
+#     get_block_device_symlinks()  —— 只有 uevent 里带 PARTNAME= 才建
+#                                     /dev/block/platform/<dev>/by-name/<name>
+#   这颗 MTK 3.10 内核不吐 PARTNAME=，所以 /dev/block/platform 整个目录不存在
+#   （实测：adb pull /dev/block/platform → ENOENT）。8.1 那套长短 by-name 路径
+#   （长路径 mtk-msdc.0/11230000.MSDC0、短路径 mtk-msdc.0）在 7.1 上都不成立。
+#   这也解释了过去那条日志：
+#     fs_mgr: Failed to mount ... on /dev/block/platform/mtk-msdc.0/by-name/system
+#             at /system ... error: No such file or directory
 #
-# 路径要用 8.1 的形态：/dev/block/platform/mtk-msdc.0/11230000.MSDC0/by-name/
-# 而不是 5.1 的 /dev/block/platform/mtk-msdc.0/by-name/。
-# 原因：8.1 的 DeviceHandler::FindPlatformDevice() 会沿 sysfs 一路往上找
-# "subsystem -> /bus/platform" 的那一层，这颗 SoC 的 eMMC 主机
-# （mmc@11230000）本身是一个 platform_device，挂在 mtk-msdc.0 下面，
-# 所以它给出的 platform 路径是 "mtk-msdc.0/11230000.MSDC0"。
-# 5.1 的 ueventd 只取第一段（mtk-msdc.0），两者差一层。
-# 用 5.1 的路径在 8.1 第一阶段会 mount 返回 ENOENT（节点确实不存在）。
-
-#<src>                                                  <mnt_point>   <type>  <mnt_flags and options>                                  <fs_mgr_flags>
-/dev/block/platform/mtk-msdc.0/11230000.MSDC0/by-name/system           /system       ext4    ro,barrier=1                                             wait
-/dev/block/platform/mtk-msdc.0/11230000.MSDC0/by-name/userdata         /data         ext4    noatime,nosuid,nodev,noauto_da_alloc,discard             wait,check
-/dev/block/platform/mtk-msdc.0/11230000.MSDC0/by-name/cache            /cache        ext4    noatime,nosuid,nodev,noauto_da_alloc,discard             wait,check
-/dev/block/platform/mtk-msdc.0/11230000.MSDC0/by-name/protect1         /protect_f    ext4    noatime,nosuid,nodev,noauto_da_alloc,commit=1,nodelalloc  wait,check
-/dev/block/platform/mtk-msdc.0/11230000.MSDC0/by-name/protect2         /protect_s    ext4    noatime,nosuid,nodev,noauto_da_alloc,commit=1,nodelalloc  wait,check
-/dev/block/platform/mtk-msdc.0/11230000.MSDC0/by-name/nvdata           /nvdata       ext4    noatime,nosuid,nodev,noauto_da_alloc,discard             wait,check
+#   分区号（/proc/partitions + scatter 交叉验证）：
+#     p20 = system   3145728 KB = 0xC0000000，与 scatter system.partition_size 一致
+#     p21 = cache    409600 KB  （TWRP /proc/mounts 实测）
+#     p22 = userdata 26783232 KB（TWRP /proc/mounts 实测）
+#
+# 二、为什么 /cache 不写在这份 fstab 里
+#   本机唯一可靠的可观测通道是往 /cache 写 checkpoint 和日志（last_kmsg 是内核
+#   ram console 的 64 KB 环形缓冲，硬断电就整块丢，已连续两次抓到全 NUL）。
+#   为了在 fs 阶段之前就能落盘，由 init.mt6735.rc 的 on early-fs 自己挂 /cache。
+#   若这里再留一行 cache，fs_mgr 会对已挂载的目标二次 mount 拿 EBUSY，
+#   而 mount_all 一旦返回错误，init 就不会 queue "nonencrypted" ——
+#   而 class_start main（zygote / servicemanager / surfaceflinger）就在那里，
+#   结果是沉默卡第一屏。宁可只挂一次。
+#
+# 三、为什么 system / data 都不带 check
+#   check 走 fs_mgr 的 check_fs()，它执行 /system/bin/e2fsck -f -y（强制全盘检查）。
+#   对 3 GB 的 system 分区来说这一步很慢；而且 e2fsck 非零退出会让 error_count++
+#   → mount_all 返回 -1 → 见 B14.3，等于 zygote 永不起。
+#   bring-up 阶段优先确定性；需要时在 TWRP 里手动 fsck。
+#   内核对脏 ext4 仍会自己回放 journal，不影响挂载。
+#
+# 四、为什么 system / data 都带 nofail（关键容错）
+#   fs_mgr.c（cm-14.1）第 715-727 行：mount 失败时
+#       if (fs_mgr_is_nofail(rec)) { ERROR("Ignoring failure ..."); }
+#       else                      { ERROR("Failed to mount ..."); ++error_count; }
+#   第 732 行：      if (error_count) return -1; else return encryptable;
+#   也就是说**没写 nofail 的分区挂不上，整个 mount_all 就返回 -1**，
+#   而 init 的 queue_fs_event 只认同 fs_mgr 的加密状态枚举，
+#   收到 -1（经 _exit(255) 变成 255）只打一句 "unexpected error"，
+#   不会 queue "nonencrypted" —— 而 class_start main（zygote 等）就在那里。
+#   写上 nofail 后，单分区失败只留一行 "Ignoring failure"，mount_all 照常
+#   返回 FS_MGR_MNTALL_DEV_NOT_ENCRYPTABLE(0)，启动链不会因为一个分区断掉。
+#   注意这只影响"是否拖死整体"，挂不上照样挂不上，checkpoint 仍会暴露问题。
+#
+# 五、protect1 / protect2 / nvdata 暂不挂
+#   都是 wait,check 的“必须挂载”项，但 bring-up 阶段不需要；等 framework 起来、
+#   要 WiFi/BT 校准时再按裸设备号逐个加回（p18/p19 那块）。
+#
+#<src>                    <mnt_point>  <type>  <mnt_flags and options>                        <fs_mgr_flags>
+/dev/block/mmcblk0p20    /system      ext4    ro,barrier=1                                     wait,nofail
+/dev/block/mmcblk0p22    /data        ext4    noatime,nosuid,nodev,noauto_da_alloc,discard     wait,nofail
 
 # 外部存储：sdcard0 是内置（emmc@intsd），sdcard1 是 TF 卡
-/devices/mtk-msdc.0/11230000.MSDC0                     auto          vfat    defaults                                                 voldmanaged=sdcard0:emmc@intsd,noemulatedsd
-/devices/mtk-msdc.0/11240000.MSDC1                     auto          vfat    defaults                                                 voldmanaged=sdcard1:auto
-/devices/platform/mt_usb                               auto          vfat    defaults                                                 voldmanaged=usbotg:auto
+/devices/mtk-msdc.0/11230000.MSDC0                     auto          vfat    defaults                                 voldmanaged=sdcard0:emmc@intsd,noemulatedsd
+/devices/mtk-msdc.0/11240000.MSDC1                     auto          vfat    defaults                                 voldmanaged=sdcard1:auto
+/devices/platform/mt_usb                               auto          vfat    defaults                                 voldmanaged=usbotg:auto
