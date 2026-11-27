@@ -48,9 +48,28 @@ service mtkbt /system/vendor/bin/mtkbt
     group system vpn net_admin inet net_raw net_bt bluetooth net_bt_admin net_bt_stack sdcard_r
 
 # ------------------------------------------------------------------------------
-# early-fs：先挂 /cache，把可观测通道建起来
+# ★ 为什么挂载/建目录都放在 early-fs / fs / late-fs / early-boot 这四个段里
 #
-# early-fs 由 AOSP /init.rc 的 on late-init 触发（trigger early-fs），早于 fs。
+# init 的规则：**同一个 trigger 下的命令，前一条失败会中止后面所有命令**。
+# 而 AOSP /init.rc 在第 9 行就 import 本文件（import /init.${ro.hardware}.rc），
+# 比它自己的 on post-fs / on post-fs-data / on boot 段更早被解析，
+# 所以本文件里同名 trigger 的命令会**排在 AOSP 命令前面**。
+# 后果：若把可能失败的命令（mount / mkdir）写进 on post-fs-data，
+# 一旦失败，AOSP 的 start vold / start debuggerd 会被一起跳过 —— 非常难查。
+#
+# 实测 AOSP init.rc 中**没有定义**以下四个段，本文件可独占，
+# 独占段里出错只影响自己：
+#     early-fs   （late-init 里第一个 trigger）
+#     fs         （7.1 的挂载入口）
+#     late-fs    （在 post-fs 之后、load_system_props 之后）
+#     early-boot （在 post-fs-data 之后、boot 之前）
+# 共享段（post-fs / post-fs-data / boot / nonencrypted）里只放 write 一个
+# checkpoint，写 /cache 基本不会失败；万一失败也只波及自己那几条。
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# early-fs（独占）：先挂 /cache，把可观测通道建起来
+#
 # mount 的 wait 关键字 = wait_for_file(dev, 5s)（builtins.cpp do_mount）。
 # /cache 用裸设备 mmcblk0p21（400 MB ext4，TWRP 实测可挂）。
 # ------------------------------------------------------------------------------
@@ -58,72 +77,88 @@ on early-fs
     mount ext4 /dev/block/mmcblk0p21 /cache wait
     wait /dev/block/mmcblk0p20 15
     mkdir /cache/gn3002 0770 root root
-    write /cache/gn3002/r0-cache-mounted.txt ok
+    write /cache/gn3002/r0-early-fs-cache-mounted.txt ok
 
 # ------------------------------------------------------------------------------
-# fs：真正的挂载（7.1 的挂载入口，必须写在设备 rc 里）
+# fs（独占）：真正的挂载（7.1 的挂载入口，必须写在设备 rc 里）
 #
 # AOSP /init.rc 的 on fs 段里只有一句注释：
 #   # Mount fstab in init.{$device}.rc by mount_all command.
-# 即 7.1 约定由设备自己的 init.<hw>.rc 负责挂载；AOSP 自己没有 mount_all
-# （这点和 8.1 完全相反 —— 8.1 的挂载全在 init 的 C++ 里）。
-# 两边都以为对方挂 → 谁都没挂 → /system 空 → 卡第一屏。
+# 即 7.1 约定由设备自己的 init.<hw>.rc 负责挂载（和 8.1 完全相反，
+# 8.1 的挂载全在 init 的 C++ 里）。两边都不写就谁都没挂 → /system 空。
 #
 # device 节点一定已经在了：AOSP init main() 在 early-init 之后先跑
 # wait_for_coldboot_done_action（等 ueventd 建出 /dev/.coldboot_done），
 # 然后才 queue init / late-init；而 handle_block_device_event() 对每个块设备
 # 无条件建 /dev/block/<name>。所以 mmcblk0p20 在 fs 阶段必然存在。
 #
-# mount_all 失败 = 沉默卡第一屏：只有它正常返回 FS_MGR_MNTALL_DEV_NOT_ENCRYPTABLE，
-# init 才会 queue "nonencrypted"，而 class_start main（zygote、servicemanager、
-# surfaceflinger 全在 main 类）就在那个动作里。
-# 所以 mount_all 必须是本动作第一条，前面不许有任何可能失败的命令。
+# mount_all 必须是本段第一条：它返回 -1 时 init 不会 queue "nonencrypted"，
+# 而 class_start main（zygote/servicemanager/surfaceflinger）就在那里。
+# （fstab 里两个分区都带 nofail，就是为了让 error_count 保持 0，见 B15。）
 # ------------------------------------------------------------------------------
 on fs
     mount_all /fstab.mt6735
-    write /cache/gn3002/r1-mount-all-returned.txt ok
+    write /cache/gn3002/r1-fs-mount-all-returned.txt ok
 
 # ------------------------------------------------------------------------------
-# post-fs：兜底再挂一次 /system
+# late-fs（独占）：兜底再挂一次 /system
 #
-# 若 mount_all 没挂上 /system，这里直接补一次；已挂上会 EBUSY。
-# 所以这条放本动作最后（失败会中止本动作剩余命令）。
+# 若 mount_all 没把 /system 挂上，这里直接补一次；已挂上会 EBUSY。
+# 放在独占段里，失败不会波及 AOSP 的 start logd 等命令。
+# late-fs 在 post-fs 之后触发，此时 logd 已起、/system 属性即将/已经加载。
 # ------------------------------------------------------------------------------
-on post-fs
-    write /cache/gn3002/r2-post-fs.txt ok
+on late-fs
     mount ext4 /dev/block/mmcblk0p20 /system ro wait
+    write /cache/gn3002/r3-late-fs-system-mounted.txt ok
 
 # ------------------------------------------------------------------------------
-# post-fs-data
+# early-boot（独占）：/data 目录 + 设备节点权限
 #
-# MTK 的守护进程习惯把运行时状态写在 /data 下的固定目录，先建出来。
+# 这几条都放这里而不是 on boot，因为 on boot 是和 AOSP 共享的段
+# （AOSP 在那里做 class_start core，logd / adbd 全在 core 类）。
+# chown/chmod 对不存在的节点会返回失败，一旦失败就会把 class_start core
+# 一起跳过 —— logd 不起就没有 logcat，adbd 不起就连不上。放独占段最安全。
+#
+# 这些节点在 early-boot 阶段都已存在：ueventd 的 coldboot 很早就完成，
+# /proc/mtk_battery_cmd 由 PMIC 驱动 probe 时创建。
+#
+# 触摸是汇顶 FT8606 / 敦泰，走 input 子系统；PMIC 的充电节点要能被 framework 读。
 # ------------------------------------------------------------------------------
-on post-fs-data
-    write /cache/gn3002/r3-post-fs-data.txt ok
+on early-boot
     mkdir /data/nvram 0771 root root
     mkdir /data/nvram/APCFG 0771 root root
     mkdir /data/misc/wifi 0770 wifi wifi
     mkdir /data/misc/bluetooth 0770 bluetooth bluetooth
-
-# ------------------------------------------------------------------------------
-# boot：权限
-#
-# 触摸是汇顶 FT8606 / 敦泰，走 input 子系统；PMIC 的充电节点要能被 framework 读。
-# ------------------------------------------------------------------------------
-on boot
-    write /cache/gn3002/r4-boot.txt ok
+    write /cache/gn3002/r5-early-boot-dirs.txt ok
     chown system system /proc/mtk_battery_cmd
     chmod 0660 /proc/mtk_battery_cmd
     # 7.1 的外部存储走 FUSE（内核没有 sdcardfs），把 fuse 设备放开
     chmod 0666 /dev/fuse
 
+# ------------------------------------------------------------------------------
+# 共享段：只放 write checkpoint（写 /cache 基本不会失败）
+#
+# 这里必须克制：本文件在 init.rc 第 9 行就被 import，同名 trigger 的命令排在
+# AOSP 命令前面，而我们这几条一旦失败，AOSP 的同段命令（start logd /
+# start vold / class_start core / class_start main）会被一起跳过。
+# tools/check_init_rc.py 之外，CI 里也有一条校验专门盯这件事。
+# ------------------------------------------------------------------------------
+on post-fs
+    write /cache/gn3002/r2-post-fs.txt ok
+
+on post-fs-data
+    write /cache/gn3002/r4-post-fs-data.txt ok
+
+on boot
+    write /cache/gn3002/r6-boot.txt ok
+
 on nonencrypted
     # 只有 mount_all 正常返回才会触发这里，class_start main 就在本动作里
     # （AOSP init.rc 的 on nonencrypted 段）。文件出现 = /system 与 /data 都挂上了。
-    write /cache/gn3002/r5-nonencrypted.txt ok
+    write /cache/gn3002/r7-nonencrypted.txt ok
 
 on property:init.svc.zygote=running
-    write /cache/gn3002/r6-zygote-running.txt ok
+    write /cache/gn3002/r8-zygote-running.txt ok
 
 # ------------------------------------------------------------------------------
 # 日志落盘（★ 本项目最重要的调试设施）

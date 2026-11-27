@@ -305,7 +305,35 @@ jobs:
               first = next((ln.strip() for ln in fs_sec.split('\n') if ln.strip()), '')
               if not first.startswith('mount_all'):
                   sys.exit('[init] on fs 段第一条命令是 %r，必须是 mount_all' % first)
-              print('[init] 挂载链校验通过（early-fs 挂 cache + fs 首条 mount_all + bootlog）')
+              # 可能失败的命令（mount/mkdir）必须放在 AOSP 没定义的独占 trigger 里。
+              # 原因：init 同一 trigger 下前一条命令失败会中止后面所有命令，而本文件
+              # 在 init.rc 第 9 行就被 import，同名 trigger 的命令排在 AOSP 命令前面
+              # —— 若失败，AOSP 的 start logd / start vold 会被一起跳过。
+              # AOSP init.rc 里没有定义的段：early-fs / fs / late-fs / early-boot。
+              exclusive = ('early-fs', 'fs', 'late-fs', 'early-boot')
+              shared_bad = []
+              cur = None
+              for ln in active_txt.split('\n'):
+                  t = ln.strip()
+                  if not t:
+                      continue
+                  if t.startswith('on '):
+                      cur = t[3:].split()[0] if len(t) > 3 else ''
+                      continue
+                  if cur in exclusive:
+                      continue
+                  cmd = t.split()[0]
+                  if cmd in ('mount', 'mount_all', 'mkdir', 'chmod', 'chown',
+                             'copy', 'exec', 'swapon_all', 'restorecon',
+                             'restorecon_recursive'):
+                      shared_bad.append((cur, t))
+              if shared_bad:
+                  for sec, t in shared_bad:
+                      print('[init] 共享 trigger "%s" 里有可失败命令: %s' % (sec, t))
+                  sys.exit('[init] 可失败命令必须放进 early-fs/fs/late-fs/early-boot '
+                           '独占段，否则会连带跳过 AOSP 的 start logd/vold')
+              print('[init] 挂载链校验通过（early-fs 挂 cache + fs 首条 mount_all + '
+                    'late-fs 兜底 + bootlog；可失败命令均在独占 trigger）')
           else:
               sys.exit('[init] 找不到 ' + ir)
 
