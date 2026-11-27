@@ -317,7 +317,44 @@ patch_temp_battery() {
     fi
 }
 
-patch_temp_battery
+# ---------------------------------------------------------------------------
+# 7. libsepol：让 checkpolicy 能在 v29 下写出策略（摘掉 ioctl 扩展权限节点）
+# ---------------------------------------------------------------------------
+# BoardConfig 里 POLICYVERS := 29（这颗 MTK 3.10 内核只支持策略版本 15..29）。
+# 而 Android 8.1 的 sepolicy 用了 v30 才有的 ioctl 扩展权限（xperm）规则，
+# 于是在写二进制策略时直接失败 —— 这正是 2026-11-27 那次 TWRP 构建挂在
+# Build recovery 的原因：
+#   libsepol.avtab_write_item: policy version 29 does not support ioctl
+#   extendedpermissions rules and one was specified
+#   checkpolicy: error writing .../sepolicy.recovery_intermediates/sepolicy.tmp
+#
+# 注意：本地重打包路径（tools/build_twrp_lite.py）不会撞到这个坑，因为它沿用
+# **原厂 5.1 的 sepolicy（v26）**，压根不编策略；只有 CI 现编才会遇到。
+# 15.1 的 workflow 早就有这一步（dt/ci/patch-libsepol.py），TWRP 这条线漏了。
+# ---------------------------------------------------------------------------
+patch_libsepol() {
+    local s="$DT_DIR/ci/patch-libsepol.py"
+    local w="external/selinux/libsepol/src/write.c"
+    if [ ! -f "$s" ]; then
+        echo "  [libsepol] 警告: 找不到 $s，跳过" >&2
+        return 0
+    fi
+    if [ ! -f "$w" ]; then
+        echo "  [libsepol] 警告: 找不到 $w，跳过" >&2
+        return 0
+    fi
+    if python3 "$s" "$w"; then
+        # 补丁只改源码；确保 checkpolicy 会用新源码重编（全新树本来就没编过，
+        # 这里删掉产物是防御性的，避免 ccache/增量构建拿旧的目标文件）。
+        rm -f out/host/linux-x86/obj/STATIC_LIBRARIES/libsepol_intermediates/*.o 2>/dev/null || true
+        patched=$((patched + 1))
+    else
+        echo "  [libsepol] 失败" >&2
+        failed=$((failed + 1))
+    fi
+}
+
+patch_libsepol
 
 echo "== 完成：转换 $patched 个文件，失败 $failed 个 =="
 [ "$failed" -eq 0 ] || echo "== 注意：有文件没能自动转换，编译可能会再撞到 ==" >&2

@@ -81,8 +81,12 @@ TEMP_NEW = r'''	else if (varName == "tw_cpu_temp")
 				if (nl != string::npos)
 					typeVal.erase(nl);
 				string lower = typeVal;
-				for (size_t k = 0; k < lower.size(); k++)
-					lower[k] = (char)tolower((unsigned char)lower[k]);
+				for (size_t k = 0; k < lower.size(); k++) {
+					/* 只做 ASCII 小写，避免依赖 <cctype> 里的全局 tolower
+					 * （标准只保证 std::tolower，全局版本属于实现细节） */
+					if (lower[k] >= 'A' && lower[k] <= 'Z')
+						lower[k] = (char)(lower[k] - 'A' + 'a');
+				}
 				/* MTK: mtktscpu / cpu；高通: cpu-0-0-us；通用: soc_thermal */
 				if (lower.find("cpu") != string::npos ||
 					lower.find("soc_thermal") != string::npos ||
@@ -259,13 +263,7 @@ def main():
         src = out
         print('  [电量] 已加 capacity→千分比→charge_counter 三级兜底')
 
-    # 头部注入 <stdlib.h> 用法已由现有 include 覆盖；这里只做基础自检
-    for need in ('tolower', 'strtoul', 'atol'):
-        if need in src and need not in ('tolower',):
-            pass
-    if '#include <ctype.h>' not in src and 'tolower' in src:
-        src = src.replace('#include <string.h>', '#include <string.h>\n#include <ctype.h>', 1)
-
+    # 不再需要注入 <ctype.h>（改用纯 ASCII 小写，不依赖全局 tolower）
     with open(p, 'w', encoding='utf-8', errors='surrogateescape', newline='\n') as f:
         f.write(src)
     print('  [完成] 已写回 %s' % p)
