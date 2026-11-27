@@ -220,6 +220,10 @@ src = open(f, encoding='utf-8').read()
 block = r'''
 # ---- phoenix ramdisk slim (injected by ci-patch-tree.sh) ----
 # Must run before mkbootfs packages the ramdisk; do NOT repack afterwards.
+# 注意：不要在批量 rm 里写 $(TARGET_RECOVERY_ROOT_OUT)/twres/languages。
+# 那会把整个语言包目录删掉，TWRP 就只剩内置英文，设置里切换中文必然无效
+# （2026-11-27 用户报的"简体中文和英文无法正常切换"就是这一类症状）。
+# 只需要删掉用不到的语言，保留 en / zh_CN。
 LOCAL_POST_INSTALL_CMD += \
     rm -rf $(TARGET_RECOVERY_ROOT_OUT)/sbin/python3 \
            $(TARGET_RECOVERY_ROOT_OUT)/etc/python \
@@ -232,9 +236,11 @@ LOCAL_POST_INSTALL_CMD += \
            $(TARGET_RECOVERY_ROOT_OUT)/sbin/etc/nano \
            $(TARGET_RECOVERY_ROOT_OUT)/sbin/charger \
            $(TARGET_RECOVERY_ROOT_OUT)/sbin/linker \
-           $(TARGET_RECOVERY_ROOT_OUT)/sbin/libncurses.so \
-           $(TARGET_RECOVERY_ROOT_OUT)/twres/languages; \
-    echo "phoenix ramdisk slim: post-install cleanup done"
+           $(TARGET_RECOVERY_ROOT_OUT)/sbin/libncurses.so ; \
+    find $(TARGET_RECOVERY_ROOT_OUT)/twres/languages -type f \
+         ! -name 'en.xml' ! -name 'zh_CN.xml' -delete 2>/dev/null || true ; \
+    echo "phoenix ramdisk slim: post-install cleanup done" ; \
+    ls -l $(TARGET_RECOVERY_ROOT_OUT)/twres/languages/ || true
 
 '''
 marker = 'include $(BUILD_EXECUTABLE)'
@@ -251,6 +257,67 @@ PYEOF
 }
 
 patch_recovery_ramdisk
+
+# ---------------------------------------------------------------------------
+# 5. TWRP 主题 i18n：让中文可选、且切换后真的记得住
+# ---------------------------------------------------------------------------
+# 三个独立问题叠在一起：
+#   1. TW_EXTRA_LANGUAGES := false，而 zh_CN.xml 只存在于 extra-languages，
+#      所以基础主题里**根本没有中文** —— 设置里压根没得选。
+#   2. zh_CN.xml 的 fontoverride 指向 DroidSansFallback.ttf（3.7MB 全套 CJK），
+#      不装它中文就是方块。设备树里带了子集化版本（1.07MB）。
+#   3. ui.xml 若硬编码 <variable name="tw_language" value="zh_CN"/>，
+#      PageSet::LoadVariables() 每次加载主题都会覆盖持久设置
+#      （data.cpp:459-462 对已存在的键直接 mPersist.SetValue），
+#      于是用户在界面切英文、写进 .twrps 也没用，下次开机又被改回中文。
+#      上游主题本来没有这个变量，是本项目早期本地注入的，属自造坑。
+# 实现在 patch-twrp-theme-i18n.py（含幂等与自检）。
+# ---------------------------------------------------------------------------
+DT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+patch_theme_i18n() {
+    local s="$DT_DIR/tools/patch-twrp-theme-i18n.py"
+    if [ ! -f "$s" ]; then
+        echo "  [i18n] 警告: 找不到 $s，跳过" >&2
+        return 0
+    fi
+    if python3 "$s" "$(pwd)" "$DT_DIR"; then
+        patched=$((patched + 1))
+    else
+        echo "  [i18n] 失败" >&2
+        failed=$((failed + 1))
+    fi
+}
+
+patch_theme_i18n
+
+# ---------------------------------------------------------------------------
+# 6. CPU 温度 / 电量显示修正
+# ---------------------------------------------------------------------------
+# 温度：TW_CUSTOM_CPU_TEMP_PATH 写死 thermal_zone1，但 MT6735 上 zone 序号由
+#       内核注册顺序决定，zone1 可能是 PCB/电池温度甚至不上报的占位节点。
+#       改成按 thermal_zoneN/type 是否含 "cpu" 自动识别，找不到才退回配置值，
+#       并对超出 1..125 度的结果判为读错（宁可不显示也不误导）。
+# 电量：capacity 读失败、或量程不是 0..100（某些 MTK 给 0..1000 千分比）时，
+#       兜底归一与 charge_counter/charge_full；都拿不到就显示 n/a，
+#       不再显示误导性的 0 / 101。
+# 实现在 patch-twrp-temp-battery.py。
+# ---------------------------------------------------------------------------
+patch_temp_battery() {
+    local s="$DT_DIR/tools/patch-twrp-temp-battery.py"
+    if [ ! -f "$s" ]; then
+        echo "  [temp] 警告: 找不到 $s，跳过" >&2
+        return 0
+    fi
+    if python3 "$s" "$(pwd)"; then
+        patched=$((patched + 1))
+    else
+        echo "  [temp] 失败" >&2
+        failed=$((failed + 1))
+    fi
+}
+
+patch_temp_battery
 
 echo "== 完成：转换 $patched 个文件，失败 $failed 个 =="
 [ "$failed" -eq 0 ] || echo "== 注意：有文件没能自动转换，编译可能会再撞到 ==" >&2

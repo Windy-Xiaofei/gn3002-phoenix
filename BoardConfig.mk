@@ -124,10 +124,6 @@ TARGET_SCREEN_WIDTH := 720
 
 TW_THEME := portrait_hdpi
 TW_DEVICE_VERSION := gn3002-phoenix
-# TeamWin 分支的 twres/languages/ 里没有 zh_CN.xml（只有 en + 欧洲语言），
-# 设 zh_CN 只会 fallback 到内置英文。CI 的 strip 步骤会删掉整个 languages/，
-# 所以这里明确设 en，避免误导。
-TW_DEFAULT_LANGUAGE := en
 
 # ---- 体积控制 --------------------------------------------------------------
 # recovery 分区只有 16MB，实测原配置打出来的镜像是 20.7MB，装不进去：
@@ -135,6 +131,14 @@ TW_DEFAULT_LANGUAGE := en
 # 内核（原厂 Image.gz-dtb 6.9MB）动不了，只能压 ramdisk。
 # 下面每一项都是可选的锦上添花，砍掉不影响刷机能力。
 TW_EXTRA_LANGUAGES := false       # 全套语言包，最大的一笔（约 2MB）
+# 默认语言用编译期宏而不是主题里的 ui.xml 变量：
+#   data.cpp:872  mPersist.SetValue("tw_language", EXPAND(TW_DEFAULT_LANGUAGE));
+#   data.cpp:459  若 ui.xml 里也声明了 tw_language 且带 value，
+#                 LoadVariables 每次加载都会覆盖持久设置 → 切换永远不生效。
+# 所以默认值放这里，用户的选择由 /data/recovery/.twrps 持久化。
+# 注意 zh_CN 的基础语言包与字体由 tools/patch-twrp-theme-i18n.py 注入，
+# 不依赖 TW_EXTRA_LANGUAGES（后者会把 18 种语言 + 3.7MB 字体全塞进来）。
+TW_DEFAULT_LANGUAGE := zh_CN
 TW_EXCLUDE_TZDATA := true         # 2.5MB；代价是 TWRP 里时间显示 UTC
 TW_EXCLUDE_TWRPAPP := true        # 刷完提示安装 TWRP App，1MB
 TW_EXCLUDE_NANO := true

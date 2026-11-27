@@ -203,6 +203,87 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      # 产物侧验证：源码补丁是否真的落进了最终 ramdisk。
+      # 光看 patch 步骤成功不够 —— 曾经出现过"补丁打了但没进镜像"的情况
+      # （例如被后续 rm 掉、或路径写错）。这三项是用户明确报过的问题：
+      #   中文可选      → twres/languages/zh_CN.xml 必须在
+      #   中文不是方块  → twres/fonts/DroidSansFallback.ttf 必须在
+      #   温度/电量可信  → data.cpp 里两处 phoenix 补丁标记必须在源码里
+      - name: Verify i18n and temp patch inside ramdisk
+        if: always()
+        run: |
+          set -uo pipefail
+          D=rom/out/target/product/gbl7356
+          RD="$D/ramdisk-recovery.img"
+          if [ ! -f "$RD" ]; then
+            echo "::error::ramdisk-recovery.img 不存在，无法验证"
+            exit 1
+          fi
+          echo "=== ramdisk 里的语言包与字体 ==="
+          # ramdisk-recovery.img 是 gzip 压缩的 cpio，直接解压后按名字查
+          tmp=$(mktemp -d)
+          gzip -dc "$RD" > "$tmp/rd.cpio" 2>/dev/null || cp "$RD" "$tmp/rd.cpio"
+          python3 - "$tmp/rd.cpio" <<'PYEOF'
+          import sys
+          raw = open(sys.argv[1], 'rb').read()
+          names = []
+          i = 0
+          while True:
+              j = raw.find(b'070701', i)
+              if j < 0:
+                  break
+              h = raw[j:j+110]
+              try:
+                  namesize = int(h[94:102], 16)
+                  filesize = int(h[54:62], 16)
+              except ValueError:
+                  break
+              name = raw[j+110:j+110+namesize-1].decode('utf-8', 'replace')
+              names.append((name, filesize))
+              i = j + 110 + namesize
+              i = (i + 3) & ~3
+              i += filesize
+              i = (i + 3) & ~3
+              if name == 'TRAILER!!!':
+                  break
+          want = {
+              'twres/languages/en.xml': None,
+              'twres/languages/zh_CN.xml': None,
+              'twres/fonts/DroidSansFallback.ttf': None,
+          }
+          have = dict(names)
+          bad = []
+          for k in want:
+              if k in have:
+                  print('  OK   %-38s %9d B' % (k, have[k]))
+              else:
+                  print('  MISS %-38s' % k)
+                  bad.append(k)
+          # 语言包不要太多，否则挤爆 16MB 分区
+          langs = [n for n, _ in names if n.startswith('twres/languages/') and n.endswith('.xml')]
+          print('  twres/languages 共 %d 个: %s' % (len(langs), ', '.join(sorted(langs))))
+          if len(langs) > 4:
+              print('  WARN 语言包过多（%d），注意 16MB 分区余量' % len(langs))
+          if bad:
+              print('::error::ramdisk 缺少关键文件: %s' % ', '.join(bad))
+              sys.exit(1)
+          print('OK: i18n 资源齐全')
+          PYEOF
+          rm -rf "$tmp"
+
+          echo "=== 源码里的温度/电量补丁标记 ==="
+          for m in "phoenix cpu_temp autodetect" "phoenix battery fallback"; do
+            if grep -q "$m" rom/bootable/recovery/data.cpp; then
+              echo "  OK   $m"
+            else
+              echo "::error::data.cpp 缺少补丁标记: $m"
+              exit 1
+            fi
+          done
+          echo "=== 编译期宏是否生效 ==="
+          grep -m1 'TW_DEFAULT_LANGUAGE' rom/out/target/product/gbl7356/obj/ETC/*/intermediates/* 2>/dev/null || true
+          echo "OK: 全部验证通过"
+
       - name: Collect artifacts
         run: |
           mkdir -p artifacts
