@@ -13,11 +13,26 @@
 #
 set -uo pipefail
 
+# ★ 必须在 cd 之前把设备树根目录解析成绝对路径。
+#   2026-11-27 踩坑：下面已经 cd "$ROM_DIR" 了，而 BASH_SOURCE[0] 是**相对路径**
+#   （workflow 里是 `bash rom/device/gionee/gbl7356/tools/ci-patch-tree.sh rom`），
+#   `cd "$(dirname "$BASH_SOURCE")/.."` 就变成 rom/rom/device/... 不存在，
+#   `&&` 短路后整个 $() 输出空串 → DT_DIR="" → 后面的补丁脚本全部"找不到，
+#   跳过"。而跳过只是警告、不影响退出码，于是 sepolicy 补丁没打、构建挂在
+#   libsepol xperm 上，看起来像别的原因。本地用绝对路径测试时恰好掩盖了这个 bug。
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+if [ -z "$DT_DIR" ] || [ ! -d "$DT_DIR" ]; then
+    echo "错误: 无法解析设备树根目录（DT_DIR='$DT_DIR'）" >&2
+    exit 1
+fi
+
 ROM_DIR=${1:-rom}
 cd "$ROM_DIR" || { echo "错误: 进不去 $ROM_DIR" >&2; exit 1; }
 [ -d build ] || { echo "错误: $ROM_DIR 看起来不是 Android 源码树" >&2; exit 1; }
 
 echo "== 修补源码树: $(pwd) =="
+echo "   设备树:   $DT_DIR"
 
 # ---------------------------------------------------------------------------
 # 把一个 py2 脚本转成 py3
@@ -273,13 +288,14 @@ patch_recovery_ramdisk
 #      上游主题本来没有这个变量，是本项目早期本地注入的，属自造坑。
 # 实现在 patch-twrp-theme-i18n.py（含幂等与自检）。
 # ---------------------------------------------------------------------------
-DT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# 注意：DT_DIR 已在脚本开头（cd 之前）解析好，这里不要重复定义 ——
+# 重复用 BASH_SOURCE 相对路径去 cd 会得到空串，正是这次构建翻车的直接原因。
 
 patch_theme_i18n() {
     local s="$DT_DIR/tools/patch-twrp-theme-i18n.py"
     if [ ! -f "$s" ]; then
-        echo "  [i18n] 警告: 找不到 $s，跳过" >&2
-        return 0
+        echo "  [i18n] 错误: 找不到 $s。这是构建必需的补丁，不能跳过" >&2
+        exit 1
     fi
     if python3 "$s" "$(pwd)" "$DT_DIR"; then
         patched=$((patched + 1))
@@ -306,8 +322,8 @@ patch_theme_i18n
 patch_temp_battery() {
     local s="$DT_DIR/tools/patch-twrp-temp-battery.py"
     if [ ! -f "$s" ]; then
-        echo "  [temp] 警告: 找不到 $s，跳过" >&2
-        return 0
+        echo "  [temp] 错误: 找不到 $s。这是构建必需的补丁，不能跳过" >&2
+        exit 1
     fi
     if python3 "$s" "$(pwd)"; then
         patched=$((patched + 1))
@@ -336,12 +352,12 @@ patch_libsepol() {
     local s="$DT_DIR/ci/patch-libsepol.py"
     local w="external/selinux/libsepol/src/write.c"
     if [ ! -f "$s" ]; then
-        echo "  [libsepol] 警告: 找不到 $s，跳过" >&2
-        return 0
+        echo "  [libsepol] 错误: 找不到 $s。这是构建必需的补丁，不能跳过" >&2
+        exit 1
     fi
     if [ ! -f "$w" ]; then
-        echo "  [libsepol] 警告: 找不到 $w，跳过" >&2
-        return 0
+        echo "  [libsepol] 错误: 找不到 $w。这是构建必需的补丁，不能跳过" >&2
+        exit 1
     fi
     if python3 "$s" "$w"; then
         # 补丁只改源码；确保 checkpolicy 会用新源码重编（全新树本来就没编过，
@@ -353,6 +369,8 @@ patch_libsepol() {
         failed=$((failed + 1))
     fi
 }
+
+patch_temp_battery
 
 patch_libsepol
 
