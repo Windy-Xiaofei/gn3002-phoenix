@@ -21,8 +21,11 @@ MARK = 'phoenix adb-data fix'
 BLOCK = r'''
 # ---- phoenix adb-data fix (injected by patch-twrp-adb-data.py) ----
 # 让 adb shell / 终端可用、/data 可读。必须在 mkbootfs 之前生效。
+# 注意：不能用 $(TARGET_RECOVERY_ROOT_OUT) —— 在 recovery 模块上下文里它
+# 指向 system root，不是 recovery ramdisk 根（2026-11-28 CI 实测：改的文件
+# 没进 ramdisk）。真正的 recovery ramdisk 根是 $(PRODUCT_OUT)/recovery/root。
 LOCAL_POST_INSTALL_CMD += \
-    python3 %s $(TARGET_RECOVERY_ROOT_OUT) ; \
+    python3 %s $(PRODUCT_OUT)/recovery/root ; \
     echo "phoenix adb-data fix: done"
 
 ''' % POSTINSTALL
