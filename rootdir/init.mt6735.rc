@@ -113,9 +113,8 @@ on early-fs
 # （fstab 里两个分区都带 nofail，就是为了让 error_count 保持 0，见 B15。）
 # ------------------------------------------------------------------------------
 on fs
-    write /dev/kmsg "<3>gn3002: fs entered, calling mount_all"
     mount_all /fstab.mt6735
-    write /dev/kmsg "<3>gn3002: mount_all returned ok"
+    write /dev/kmsg "<3>gn3002: fs mount_all returned ok"
     write /data/gn3002/r1-fs-mount-all-returned.txt ok
 
 # ------------------------------------------------------------------------------

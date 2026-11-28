@@ -364,14 +364,24 @@ jobs:
                            '/dev/block/mmcblk0p22', '/data'):
                   if need not in joined:
                       sys.exit('[fstab] 生效行里缺少 %s' % need)
-              # /cache 必须由 init early-fs 挂；fstab 里再来一条会让 fs_mgr
-              # 对已挂载目标二次 mount 拿 EBUSY，mount_all 整体失败 -> 卡第一屏。
+              # /cache 必须**留在** fstab 里（B17 实测教训，与早期结论相反）：
+              # 曾把 /cache 从 fstab 删掉、只靠 init 的 on early-fs 显式 mount，
+              # 结果那次 mount 失败时完全静默（init 的 mount 命令不打日志），
+              # 导致整个启动过程 /cache 从未挂载，checkpoint 与 bootlog 的日志
+              # 全落进 ramdisk 内存目录、重启即失。
+              # 现在双保险：early-fs 先试一次，fstab 这里再由 fs_mgr 挂。
+              # 二次挂载拿 EBUSY 也不致命 —— 因为带 nofail，不计入 error_count。
+              cache_row = None
               for ln in active:
                   parts = ln.split()
-                  if len(parts) >= 2 and parts[1] == '/cache':
-                      sys.exit('[fstab] 生效行里仍有 /cache 条目；'
-                               '/cache 由 init early-fs 挂，重复挂载会让 '
-                               'mount_all 拿 EBUSY 而整体失败')
+                  if len(parts) >= 5 and parts[1] == '/cache':
+                      cache_row = parts
+              if cache_row is None:
+                  sys.exit('[fstab] 缺少 /cache 条目；B17 实测：/cache 必须留在 '
+                           'fstab 里，靠 nofail 兜住二次挂载的 EBUSY')
+              if 'nofail' not in cache_row[4]:
+                  sys.exit('[fstab] /cache 缺 nofail：二次挂载拿 EBUSY 会让 '
+                           'error_count++ 进而 mount_all 返回 -1')
               # system / data 必须带 nofail（B15）：fs_mgr.c 里没写 nofail 的分区
               # 挂不上会 ++error_count，mount_all 返回 -1；init 收到 255 只打一句
               # "unexpected error"，不 queue "nonencrypted"，而 class_start main
