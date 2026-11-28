@@ -13,16 +13,16 @@
   <a href="#"><img alt="android" src="https://img.shields.io/badge/LineageOS-14.1%20(Android%207.1)-green"></a>
   <a href="#"><img alt="soc" src="https://img.shields.io/badge/SoC-MT6735-blue"></a>
   <a href="#"><img alt="kernel" src="https://img.shields.io/badge/kernel-3.10.65%20(stock)-lightgrey"></a>
+  <a href="#license"><img alt="license" src="https://img.shields.io/badge/license-MIT-green"></a>
 </p>
 
 ---
 
 厂商没了，OTA 服务器早关了，最后一版固件是老旧的安卓版本
 
-> **主线：LineageOS 14.1 / Android 7.1（用原厂 3.10 内核）。**
+> **主线：LineageOS 14.1 / Android 7.1，使用原厂 3.10 内核。**
 > 15.1 / 8.1 线已暂停：HIDL 需要 `/dev/hwbinder`、`/dev/vndbinder`，
 > 而原厂 3.10 内核只有 `/dev/binder`，重编内核成本过高。
-> 下文 §状态 里标注「8.1」的内容对 14.1 不适用，仅留档。
 
 ---
 
@@ -135,7 +135,7 @@ flowchart TB
 
 > 历史上 8.1 卡在 `FirstStageMount` 只读设备树 `/firmware/android/fstab` 那一段，
 > 修复脚本是 [`ci/patch-first-stage.py`](ci/patch-first-stage.py)；
-> 8.1 线已暂停，该结论仅留档。
+> 8.1 线已暂停，该结论仅留档（14.1 不走 FirstStageMount，见 DEBUG-LOG B14）。
 
 ---
 
@@ -181,7 +181,7 @@ page_size     2048
 ├── AndroidProducts.mk       lunch 目标注册
 ├── omni_gbl7356.mk          M1 TWRP 的产品定义
 ├── twrp.fstab               TWRP 分区挂载表
-├── ci/                      ★ 三个构建期源码补丁（见「三个补丁」）
+├── ci/                      ★ 构建期源码补丁（libsepol / init / first-stage）
 ├── blobs/                   233 个原厂闭源文件（86 MB）
 ├── rootdir/                 init.mt6735.rc / ueventd.mt6735.rc / fstab.mt6735
 ├── configs/                 audio_policy / media_codecs / thermal
@@ -235,11 +235,6 @@ gh run download <run-id> -R Windy-Xiaofei/gn3002-phoenix -n lineage-gbl7356-<n> 
 repo init -u https://github.com/LineageOS/android.git -b lineage-15.1 --depth=1
 repo sync -c -j8 --force-sync --no-clone-bundle --no-tags
 
-# 三个补丁（顺序无所谓，必须在编译前）
-python3 ci/patch-libsepol.py     external/selinux/libsepol/src/write.c
-python3 ci/patch-init.py         system/core/init/init.cpp
-python3 ci/patch-first-stage.py  system/core/init/init_first_stage.cpp
-
 mkdir -p device/gionee/gbl7356
 rsync -a --exclude=.git ./ device/gionee/gbl7356/
 
@@ -257,42 +252,6 @@ repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omn
 lunch omni_gbl7356-eng
 mka recoveryimage
 ```
-
----
-
-## 三个补丁
-
-工作流在 `repo sync` 之后、编译之前执行。为什么需要它们，逐条写在 `BoardConfig.mk` 的注释里。
-
-### `ci/patch-libsepol.py`
-
-内核只认 SELinux 策略 15–29，8.1 默认 30。改成 `POLICYVERS := 29` 后
-`checkpolicy` 会拒绝写出，因为 8.1 策略用了 `ioctl` 扩展权限（v30 特性）：
-
-```
-libsepol.avtab_write_item: policy version 29 does not support ioctl extendedpermissions rules
-```
-
-补丁在写策略前把这些节点从 avtab 哈希桶摘掉并 `a->nel--`（不能简单 `return`，
-计数会错）。内核本来不支持这些规则，丢掉后策略依然自洽。
-
-### `ci/patch-init.py`
-
-3.10 没有 `/proc/sys/vm/mmap_rnd_bits`（Linux 4.1 才有），8.1 的
-`set_mmap_rnd_bits_action()` 写失败就 `security_failure()` → 重启进 bootloader。
-`set_kptr_restrict_action()` 同理。补丁把这两处降级成 `LOG(WARNING)`。
-
-### `ci/patch-first-stage.py`
-
-`FirstStageMount` 只从设备树读挂载表。补丁在 DT 缺失时回落到固定路径
-`/fstab.mt6735`、`/vendor/etc/fstab.mt6735`，并且**只把 `/system`、`/vendor`
-放进挂载队列**。
-
-> 两个坑：① 不能用 `fs_mgr_read_fstab_default()`，它依赖 `ro.hardware`，
-> 而 `FirstStageMount` 构造时属性区还没初始化（`DoFirstStageMount()` 在 main 第 47 行，
-> `property_init()` 在第 92 行），路径会拼成 `/fstab.`；
-> ② 队列里每一条都会被 `fs_mgr_do_mount_one()`，任何一条失败就让 init panic，
-> 所以 `/data`、`/cache` 这些不能放进去。
 
 ---
 
@@ -338,9 +297,10 @@ TWRP → 安装 → **安装镜像** → 选 `system.img` → 目标 **System Im
 
 | 问题 | 状态 |
 |---|---|
-| `/system` 不挂载 | 补丁已写，待验证 |
-| TWRP 在 SELinux enforcing 下权限不足（不能格式化 /data） | 未解决。原厂 5.1 的 init 是 user 版，`write /sys/fs/selinux/enforce 0` 被策略拒 |
-| 电池 / 温度读数不准 | 未解决，低优先级。诊断钩子已在 `sbin/sysprobe.sh` |
+| surfaceflinger 反复 SIGABRT | **当前卡点**。堆栈指向 `eglGetDisplay()`；已补 `libstlport.so` 等 6 个厂商依赖库，待验证 |
+| TWRP 里 `adb shell` / 终端不可用 | 已知。SELinux 不允许 adbd 执行 `rootfs` 标签的 `/sbin/sh`，原厂 init 又无法切 permissive |
+| TWRP 下 `/data` 读不到 | 已知。TWRP 用 `resuid=10010` 挂载，adbd(uid 2000) 读到 0 字节 |
+| 电池 / 温度读数不准 | 未解决，低优先级 |
 | `sdcardfs` / `memfd_create` 缺失 | 未验证，可能要动内核 |
 | camera1 → camera3、RIL v6 → v11 | 未开始 |
 
@@ -364,5 +324,7 @@ TWRP → 安装 → **安装镜像** → 选 `system.img` → 目标 **System Im
 - Deepseek V4.1 Flash
 ## License
 
-Apache-2.0，见 [LICENSE](LICENSE)。
-`blobs/` 下的闭源二进制来自原厂固件，版权归各自权利人，仅用于让这台机器重新开机。
+MIT，见 [LICENSE](LICENSE)。
+
+`blobs/` 下的闭源二进制来自原厂固件，版权归各自权利人，仅用于让这台机器重新开机，
+不适用 MIT 协议。
