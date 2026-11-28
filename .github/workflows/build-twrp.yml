@@ -339,6 +339,8 @@ jobs:
                'restorecon' in text_of('init.rc')),
               ('init.rc 有 adb-data 标记',
                'phoenix-adbdata' in text_of('init.rc')),
+              ('postinstall 标记文件存在',
+               'phoenix-adbdata-applied' in entries),
           ]
           for label, ok in checks:
               print(('  OK   ' if ok else '  MISS ') + label)

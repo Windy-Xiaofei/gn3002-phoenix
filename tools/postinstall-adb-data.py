@@ -10,13 +10,46 @@
   3. file_contexts 追加 /system/bin/sh -> shell_exec
   4. init.rc 追加 on post-fs: restorecon_recursive /system/bin + chmod 0771 /data
 """
+import glob
 import os
 import shutil
 import stat
 import sys
 
-ROOT = sys.argv[1]
 MARK = 'phoenix-adbdata'
+
+
+def resolve_root(arg):
+    """确定 recovery ramdisk 根目录。
+
+    POST_INSTALL 里 make 变量有时不展开（$(PRODUCT_OUT) 传进来会是字面量），
+    所以不能只信参数。策略：
+      1. 参数是个真实目录且含 sbin/ -> 用它
+      2. 否则在 out/target/product/*/recovery/root 里搜索含 sbin/sh 的目录
+    """
+    if arg and os.path.isdir(arg) and os.path.isdir(os.path.join(arg, 'sbin')):
+        return arg
+    # 向上找 rom 根（脚本位于 <rom>/device/gionee/gbl7356/tools/）
+    here = os.path.dirname(os.path.abspath(__file__))
+    rom = here
+    for _ in range(8):
+        if os.path.isdir(os.path.join(rom, 'out', 'target', 'product')):
+            break
+        parent = os.path.dirname(rom)
+        if parent == rom:
+            break
+        rom = parent
+    candidates = glob.glob(os.path.join(rom, 'out', 'target', 'product', '*',
+                                        'recovery', 'root'))
+    for c in candidates:
+        if os.path.isfile(os.path.join(c, 'sbin', 'sh')) or \
+           os.path.isdir(os.path.join(c, 'sbin')):
+            print('  [auto] 定位 recovery root: %s' % c, flush=True)
+            return c
+    return arg  # 让后续报错暴露真实收到的值
+
+
+ROOT = resolve_root(sys.argv[1] if len(sys.argv) > 1 else '')
 
 
 def fix_perms():
@@ -83,13 +116,21 @@ def fix_init_rc():
 
 def main():
     if not os.path.isdir(ROOT):
-        print('ERROR: 目录不存在: %s' % ROOT, file=sys.stderr)
+        print('ERROR: 目录不存在: %s' % ROOT, file=sys.stderr, flush=True)
         return 1
-    print('[postinstall-adb-data] %s' % ROOT)
+    print('[postinstall-adb-data] ROOT=%s' % ROOT, flush=True)
     fix_perms()
     make_system_shell()
     fix_file_contexts()
     fix_init_rc()
+    # 写一个标记到 ramdisk，验证步骤可直接确认脚本真的作用到了这个目录
+    try:
+        with open(os.path.join(ROOT, 'phoenix-adbdata-applied'), 'w') as f:
+            f.write(ROOT + '\n')
+        print('  wrote marker phoenix-adbdata-applied', flush=True)
+    except Exception as e:
+        print('  !! 写标记失败: %s' % e, file=sys.stderr, flush=True)
+        return 1
     return 0
 
 
