@@ -2,10 +2,10 @@
   <img src="assets/logo.png" width="180" alt="GIONEE Phoenix logo">
 </p>
 
-<h1 align="center">Phoenix · Gionee GN3002</h1>
+<h1 align="center">GIONEE-Phoenix</h1>
 
 <p align="center">
-  <em>一台被厂商遗弃的 MT6735 手机，重新开机计划。</em>
+  <em>金立手机运行LineageOS项目</em>
 </p>
 
 <p align="center">
@@ -17,8 +17,7 @@
 
 ---
 
-厂商没了，OTA 服务器早关了，最后一版官方固件停在 Android 5.1（2017-10-11）。
-这台机器现在唯一的价值，就是它是一块 4 核 A53 + 720p 屏 + 硬件资料被扒干净的开发板。
+厂商没了，OTA 服务器早关了，最后一版固件是老旧的安卓版本
 
 > **主线：LineageOS 14.1 / Android 7.1（用原厂 3.10 内核）。**
 > 15.1 / 8.1 线已暂停：HIDL 需要 `/dev/hwbinder`、`/dev/vndbinder`，
@@ -362,7 +361,7 @@ TWRP → 安装 → **安装镜像** → 选 `system.img` → 目标 **System Im
   — MT6735 设备树的事实标准，本项目的 BoardConfig 大量参考
 - TWRP minimal manifest
 - 以及那台 2016 年出厂、至今还在服役的 GN3002
-
+- Deepseek V4.1 Flash
 ## License
 
 Apache-2.0，见 [LICENSE](LICENSE)。
