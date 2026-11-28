@@ -48,6 +48,41 @@ service mtkbt /system/vendor/bin/mtkbt
     group system vpn net_admin inet net_raw net_bt bluetooth net_bt_admin net_bt_stack sdcard_r
 
 # ------------------------------------------------------------------------------
+# 基带（RIL）—— MTK 必须用 mtkrild + ccci_mdinit，AOSP 通用 rild 起不来 socket
+# 2026-11-28 实机：通用 rild 进程在跑但 "Couldn't find 'rild' socket"，
+# RILJ 一直 RADIO_NOT_AVAILABLE -> 基带/信号不显示。
+# ------------------------------------------------------------------------------
+# modem 初始化（oneshot）。加载 modem firmware 并建立 CCCI 通道。
+# 与 mtkrild 同为 class main；mtkrild 内部会等待 CCCI 就绪，顺序不敏感。
+service ccci-mdinit /system/vendor/bin/ccci_mdinit
+    class main
+    user root
+    group root system radio
+    oneshot
+
+# MTK RIL：覆盖 AOSP 的通用 rild。socket 名必须是 rild（RILJ 找它）。
+service ril-daemon /system/vendor/bin/mtkrild
+    class main
+    user root
+    group radio cache inet misc audio sdcard_rw log
+    socket rild stream 660 root radio
+    socket rild-debug stream 660 radio system
+
+# ------------------------------------------------------------------------------
+# WiFi —— wpa_supplicant（原厂 5.1 blobs，从 factory ROM 提取）
+# 2026-11-28 实机：镜像里完全没有 wpa_supplicant，WiFi HAL 起不来。
+# ------------------------------------------------------------------------------
+# 用配置文件里的 ctrl_interface 建 socket；7.1 WifiNative 默认找
+# /data/misc/wifi/wpa_wlan0（与 wpa_supplicant.conf 的 ctrl_interface 一致）。
+service wpa_supplicant /system/bin/wpa_supplicant \
+    -iwlan0 -Dnl80211 -c/data/misc/wifi/wpa_supplicant.conf \
+    -e/data/misc/wifi/entropy.bin
+    class main
+    user wifi
+    group wifi inet keystore
+    oneshot
+
+# ------------------------------------------------------------------------------
 # ★ 为什么挂载/建目录都放在 early-fs / fs / late-fs / early-boot 这四个段里
 #
 # init 的规则：**同一个 trigger 下的命令，前一条失败会中止后面所有命令**。
@@ -175,6 +210,15 @@ on early-boot
 #   "init.svc.zygote=running" 出现，等价于 main 类已经起来了。
 on property:init.svc.zygote=running
     write /dev/kmsg "<3>gn3002: zygote running (main class started)"
+
+# ------------------------------------------------------------------------------
+# 默认开启 ADB（2026-11-28 实机验证）
+# persist.sys.usb.config=none 会持久化到 /data/property，改 default.prop 无效。
+# sys.boot_completed=1 时 /data 已挂载、persist 已加载，此时强制重设。
+# ------------------------------------------------------------------------------
+on property:sys.boot_completed=1
+    setprop persist.sys.usb.config adb
+    setprop sys.usb.config adb
 
 # ------------------------------------------------------------------------------
 # 日志落盘（★ 本项目最重要的调试设施，也是唯一能拿到 logcat 的途径）

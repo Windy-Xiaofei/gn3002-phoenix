@@ -212,4 +212,5 @@ PRODUCT_PROPERTY_OVERRIDES += \
 # 8.1 也没有 PRODUCT_DEFAULT_PROPERTY_OVERRIDES（Android 9 才有）。
 # 走 build.prop 这条路：persist.* 属性开机时会被读进属性服务，一样生效。
 PRODUCT_PROPERTY_OVERRIDES += \
-    persist.sys.usb.config=adb
+    persist.sys.usb.config=adb \
+    ro.adb.secure=0

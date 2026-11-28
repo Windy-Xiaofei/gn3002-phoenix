@@ -1,6 +1,10 @@
 # 由 tools/extract-files.sh 自动生成，请勿手改
 LOCAL_BLOBS := $(DEVICE_ROOT)/blobs
 
+# MTK 私有库完整依赖闭包（audio/camera/bt/wifi HAL 所需）
+# 由 tools/extract_full_closure.py + gen_missing_libs_mk.py 生成
+include $(LOCAL_BLOBS)/missing_libs.mk
+
 PRODUCT_COPY_FILES += $(LOCAL_BLOBS)/lib/egl/egl.cfg:$(TARGET_COPY_OUT_VENDOR)/lib/egl/egl.cfg
 PRODUCT_COPY_FILES += $(LOCAL_BLOBS)/lib/egl/libGLES_android.so:$(TARGET_COPY_OUT_VENDOR)/lib/egl/libGLES_android.so
 PRODUCT_COPY_FILES += $(LOCAL_BLOBS)/lib/egl/libGLES_mali.so:$(TARGET_COPY_OUT_VENDOR)/lib/egl/libGLES_mali.so
@@ -271,3 +275,12 @@ PRODUCT_COPY_FILES += \
 PRODUCT_COPY_FILES += \
     $(LOCAL_BLOBS)/lib/libpq_prot.so:$(TARGET_COPY_OUT_VENDOR)/lib/libpq_prot.so \
     $(LOCAL_BLOBS)/lib64/libpq_prot.so:$(TARGET_COPY_OUT_VENDOR)/lib64/libpq_prot.so
+
+# ---- WiFi wpa_supplicant + config (2026-11-28) ----
+# 2026-11-28 实机：镜像里完全没有 wpa_supplicant，导致 WiFi HAL 起不来
+# （WifiNative-HAL: HAL isn't started）。从原厂提取 64-bit wpa_supplicant
+# + libwapi.so（已在上面）+ /etc/wifi 配置。
+PRODUCT_COPY_FILES += \
+    $(LOCAL_BLOBS)/bin/wpa_supplicant:/system/bin/wpa_supplicant \
+    $(LOCAL_BLOBS)/etc/wifi/wpa_supplicant.conf:/system/etc/wifi/wpa_supplicant.conf \
+    $(LOCAL_BLOBS)/etc/wifi/wpa_supplicant_overlay.conf:/system/etc/wifi/wpa_supplicant_overlay.conf

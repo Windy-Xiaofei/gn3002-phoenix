@@ -49,6 +49,7 @@ jobs:
       # 这里用 main（= 触发本次构建的 ref）覆盖 4 个文件：
       #   rootdir/init.mt6735.rc   设备 init 规则（含 on early-fs 挂 /cache）
       #   rootdir/fstab.mt6735     裸设备 fstab
+      #   rootdir/ueventd.mt6735.rc 设备节点权限（/dev/mali0 等 GPU 节点必须 system:graphics）
       #   rootdir/sbin/bootlog.sh  开机日志落盘脚本
       #   device.mk                需要带 root/sbin/bootlog.sh 的 PRODUCT_COPY_FILES
       # 文件不存在时只告警不失败（旧分支触发时 main 上可能还没有这些文件）。
@@ -150,6 +151,7 @@ jobs:
           # ramdisk files" 的说明）。CM-14.1 分支上这些文件可能是旧版。
           echo "--- 用 main 覆盖 ramdisk 关键文件 ---"
           for f in rootdir/init.mt6735.rc rootdir/fstab.mt6735 \
+                   rootdir/ueventd.mt6735.rc \
                    rootdir/sbin/bootlog.sh device.mk; do
             if [ -f "dtmain/$f" ]; then
               mkdir -p "rom/device/gionee/gbl7356/$(dirname $f)"
