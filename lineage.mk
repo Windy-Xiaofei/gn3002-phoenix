@@ -23,6 +23,16 @@ $(call inherit-product, vendor/lineage/config/common_full_phone.mk)
 # 设备配置放最后，保证 common 的默认值先落地、设备侧再覆盖
 $(call inherit-product, device/gionee/gbl7356/device.mk)
 
+# ------------------------------------------------------------------------------
+# 只保留简体中文 + 英文（2026-11-28 用户要求）
+# languages_full.mk 会把全球所有语言的资源/字体/输入法打进 system，
+# 对 3 GB 内存 + 有限 eMMC 的 GN3002 是纯浪费。
+# AOSP 7.1 的 aapt 按 PRODUCT_LOCALES 裁剪 framework-res / 各 App 的
+# strings.xml，只打包下面两个 locale；设置里的语言列表也只剩这两项。
+# 必须在所有 inherit 之后用 := 覆盖（common_full_phone.mk 可能也设过它）。
+# ------------------------------------------------------------------------------
+PRODUCT_LOCALES := zh_CN en_US
+
 # 以下必须在所有 inherit 之后
 PRODUCT_NAME := lineage_gbl7356
 PRODUCT_DEVICE := gbl7356
