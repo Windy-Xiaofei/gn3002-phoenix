@@ -196,3 +196,8 @@ service bootlog /system/bin/sh /sbin/bootlog.sh
     user root
     group root system log
     oneshot
+    # ★ 必须显式指定域。7.1 的 init 对没有 seclabel、又没有 service_contexts
+    #   条目的服务会打 "does not have a SELinux domain defined"，
+    #   实测该服务从未真正起来（/data/gn3002 一直是空的）。
+    #   用 init 自己的域：既能执行 /system/bin/sh，也有权写 /data。
+    seclabel u:r:init:s0

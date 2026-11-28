@@ -232,3 +232,22 @@ PRODUCT_COPY_FILES += $(LOCAL_BLOBS)/vendor/firmware/libpn548ad_fw.so:$(TARGET_C
 PRODUCT_COPY_FILES += $(LOCAL_BLOBS)/vendor/firmware/modem_1_ltg_n.img:$(TARGET_COPY_OUT_VENDOR)/firmware/modem_1_ltg_n.img
 PRODUCT_COPY_FILES += $(LOCAL_BLOBS)/vendor/firmware/modem_1_lwg_n.img:$(TARGET_COPY_OUT_VENDOR)/firmware/modem_1_lwg_n.img
 PRODUCT_COPY_FILES += $(LOCAL_BLOBS)/vendor/firmware/modem_3_3g_n.img:$(TARGET_COPY_OUT_VENDOR)/firmware/modem_3_3g_n.img
+# ---- 显示栈缺失依赖（2026-11-28 用 tools/check_elf_deps.py 离线查出）----
+# hwcomposer.mt6735.so 的 DT_NEEDED 里有 5 个库在镜像和 blobs 中都不存在：
+#   libion.so  libbwc.so  libgui_ext.so  libui_ext.so  libperfservicenative.so
+# gralloc.mt6735.so 也缺 libion.so。
+# HWC/gralloc 都是 dlopen 加载的，缺依赖会导致 HAL 初始化失败、
+# surfaceflinger 直接 abort（signal 6）——这正是 14.1 卡在显示阶段的原因。
+# 这些库从原厂 5.1 的 system.img 提取（tools/extract_factory_libs.py），
+# 放到 /system/vendor/lib{,64}（7.1 非 Treble，vendor = system/vendor）。
+PRODUCT_COPY_FILES += \
+    $(LOCAL_BLOBS)/lib/libion.so:$(TARGET_COPY_OUT_VENDOR)/lib/libion.so \
+    $(LOCAL_BLOBS)/lib/libbwc.so:$(TARGET_COPY_OUT_VENDOR)/lib/libbwc.so \
+    $(LOCAL_BLOBS)/lib/libgui_ext.so:$(TARGET_COPY_OUT_VENDOR)/lib/libgui_ext.so \
+    $(LOCAL_BLOBS)/lib/libui_ext.so:$(TARGET_COPY_OUT_VENDOR)/lib/libui_ext.so \
+    $(LOCAL_BLOBS)/lib/libperfservicenative.so:$(TARGET_COPY_OUT_VENDOR)/lib/libperfservicenative.so \
+    $(LOCAL_BLOBS)/lib64/libion.so:$(TARGET_COPY_OUT_VENDOR)/lib64/libion.so \
+    $(LOCAL_BLOBS)/lib64/libbwc.so:$(TARGET_COPY_OUT_VENDOR)/lib64/libbwc.so \
+    $(LOCAL_BLOBS)/lib64/libgui_ext.so:$(TARGET_COPY_OUT_VENDOR)/lib64/libgui_ext.so \
+    $(LOCAL_BLOBS)/lib64/libui_ext.so:$(TARGET_COPY_OUT_VENDOR)/lib64/libui_ext.so \
+    $(LOCAL_BLOBS)/lib64/libperfservicenative.so:$(TARGET_COPY_OUT_VENDOR)/lib64/libperfservicenative.so
