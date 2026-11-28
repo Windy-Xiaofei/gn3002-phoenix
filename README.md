@@ -1,11 +1,29 @@
-# Phoenix · Gionee GN3002
+<p align="center">
+  <img src="assets/logo.png" width="180" alt="GIONEE Phoenix logo">
+</p>
 
-> 一台被厂商遗弃的 MT6735 手机，重新开机计划。
+<h1 align="center">Phoenix · Gionee GN3002</h1>
+
+<p align="center">
+  <em>一台被厂商遗弃的 MT6735 手机，重新开机计划。</em>
+</p>
+
+<p align="center">
+  <a href="#状态"><img alt="stage" src="https://img.shields.io/badge/stage-M2b%20bring--up-orange"></a>
+  <a href="#"><img alt="android" src="https://img.shields.io/badge/LineageOS-14.1%20(Android%207.1)-green"></a>
+  <a href="#"><img alt="soc" src="https://img.shields.io/badge/SoC-MT6735-blue"></a>
+  <a href="#"><img alt="kernel" src="https://img.shields.io/badge/kernel-3.10.65%20(stock)-lightgrey"></a>
+</p>
+
+---
 
 厂商没了，OTA 服务器早关了，最后一版官方固件停在 Android 5.1（2017-10-11）。
 这台机器现在唯一的价值，就是它是一块 4 核 A53 + 720p 屏 + 硬件资料被扒干净的开发板。
 
-**目标：Android 8.1（LineageOS 15.1），从源码编译，不是 5.1 重打包。**
+> **主线：LineageOS 14.1 / Android 7.1（用原厂 3.10 内核）。**
+> 15.1 / 8.1 线已暂停：HIDL 需要 `/dev/hwbinder`、`/dev/vndbinder`，
+> 而原厂 3.10 内核只有 `/dev/binder`，重编内核成本过高。
+> 下文 §状态 里标注「8.1」的内容对 14.1 不适用，仅留档。
 
 ---
 
@@ -14,29 +32,33 @@
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | M0 | 固件解剖、分区表、硬件档案 | ✅ 完成 |
-| M1 | TWRP 可启动、中文界面、能读 TF 卡 | ✅ 可用（13.9 MB，装进 16 MB 分区） |
-| M2a | LineageOS 15.1 编译出包 | ✅ `system.img` 3.0 GB(raw)，能刷进机器 |
-| M2b | **首次开机** | ❌ **卡在第一屏**，见下 |
+| M1 | TWRP 可启动、中文界面、能读 TF 卡 | ✅ 可用（13.3 MB，装进 16 MB 分区） |
+| M2 | LineageOS 14.1 全量编译出包 | ✅ `system.img` 3.0 GB(raw) + `boot.img`，能刷进机器 |
+| M2b | **14.1 开机启动链 bring-up** | 🔧 **进行中**，见下 |
 | M3 | 显示 / 触摸 / WiFi / 音频 / 相机 | ⬜ 未开始 |
-| M4 | Android 9 | ⬜ 未开始 |
+| M4 | 更新版本 | ⬜ 未开始 |
 
-### 当前卡点：`/system` 从未挂载
+### 当前卡点：`mount_all` 之后的阶段不透明
 
-`/proc/last_kmsg` 里的确切症状：
+前几关（LK → 内核 → SELinux v29 → `mount_all`）已逐一用 `/proc/last_kmsg` 打通。
+现在的问题不是"猜不到卡在哪"，而是**失败时不留痕迹**：
 
-```
-init: [libfs_mgr]fs_mgr_read_fstab_dt(): failed to read fstab from dt
-init: /recovery not specified in fstab
-init: Couldn't load property file: /system/etc/prop.default: No such file
-init: do_start: Service logd not found
-```
+1. `fs_mgr_mount_all()` 只在 `error_count` 非 0 时返回 -1，init 收到后只打一句
+   `unexpected error`，**不会 queue `nonencrypted`** —— 而
+   `class_start main`（zygote / servicemanager / surfaceflinger 全在 main 类）
+   就在那个动作里。于是整机**静默卡在第一屏**。
+   已在 fstab 里给各分区加 `nofail`：单分区挂不上只留一行日志，不再拖死启动链。
+2. `/proc/last_kmsg` 是 MTK ram console 的 64 KB 环形缓冲，
+   **硬断电（长按电源）就整块丢失**，只能读到全 NUL。
+   → 改成往 `/cache` 写 checkpoint 与日志，并在每个阶段
+   `write /dev/kmsg "gn3002: ..."` 打点，这样即使 `/cache` 没挂上也有据可查。
 
-Android 8 的第一阶段挂载（`FirstStageMount`）**只从设备树的 `/firmware/android/fstab`
-节点读挂载表**。我们的 DTB 里没有这个节点，于是它认为「没有要挂的东西」直接返回，
-ramdisk 里的 `/fstab.mt6735` 一次都没被用过；`/system` 挂不上，
-`logd` / `servicemanager` / `vold` 的 rc 全在 `/system/etc/init` 里 → 全部 not found → 卡死。
+详见 [`../docs/DEBUG-LOG.md`](../docs/DEBUG-LOG.md) 的 B14–B17，
+以及 [`rootdir/init.mt6735.rc`](rootdir/init.mt6735.rc) 里逐段写的注释。
 
-修复在 [`ci/patch-first-stage.py`](ci/patch-first-stage.py)，**尚未在真机验证**。
+> 历史上 8.1 卡在 `FirstStageMount` 只读设备树 `/firmware/android/fstab` 那一段，
+> 修复脚本是 [`ci/patch-first-stage.py`](ci/patch-first-stage.py)；
+> 8.1 线已暂停，该结论仅留档。
 
 ---
 
