@@ -27,6 +27,84 @@
 
 ---
 
+## 系统架构总览
+
+这张图回答一个问题：**哪些层是我们能换的，哪些必须保留原厂**。
+
+这台机器上「原厂」与「LineageOS」各自占据哪一层，决定了哪些东西能换、哪些不能动。
+**绿色**是已经由 LineageOS 14.1 接管并验证通过的部分，**橙色**是当前正在攻的关卡，
+**灰色**仍是原厂二进制（有意保留，减少变量）。
+
+```mermaid
+flowchart TB
+    subgraph HW["硬件层（不可改）"]
+        SOC["MT6735 · 4×Cortex-A53<br/>Mali-T720 · 720p · 3GB eMMC"]
+    end
+
+    subgraph BOOT["引导层"]
+        PRE["preloader<br/>原厂"]
+        LK["LK bootloader<br/>原厂 · 校验 boot.img SHA1 id"]
+        KRN["内核 3.10.65<br/>原厂 Image.gz-dtb，一个字节没改"]
+    end
+
+    subgraph RAM["ramdisk（我们自己维护）"]
+        INIT["/init · 7.1 init<br/>SELinux v29 · mount_all"]
+        FSTAB["fstab.mt6735<br/>裸设备 p20/p21/p22 + nofail"]
+        BOOTLOG["bootlog.sh<br/>日志回灌 /dev/kmsg"]
+    end
+
+    subgraph SYS["/system（LineageOS 14.1 编译产物）"]
+        FW["Android Framework 7.1.1<br/>zygote → system_server ✅"]
+        SF["surfaceflinger<br/>🔧 正在攻（eglGetDisplay）"]
+        HAL["HAL 层<br/>gralloc / hwcomposer / audio / camera<br/>原厂 .so + 补齐的依赖库"]
+    end
+
+    subgraph VENDOR["/system/vendor（原厂闭源 blobs，233 个）"]
+        EGL["libGLES_mali.so 23MB<br/>+ libstlport / libion / libbwc …"]
+        RIL["mtkrild · nvram_daemon<br/>thermal_manager · mtkbt"]
+    end
+
+    subgraph APP["应用层"]
+        SET["设置 · Trebuchet<br/>⬜ 未开始"]
+    end
+
+    SOC --> PRE --> LK --> KRN --> INIT
+    INIT --> FSTAB
+    INIT --> BOOTLOG
+    KRN --> SYS
+    FSTAB -.->|"挂载 /system"| SYS
+    FW --> SF --> HAL
+    HAL --> EGL
+    HAL --> RIL
+    FW --> APP
+
+    classDef done fill:#dff5e1,stroke:#2e9e4f,color:#1b5e20
+    classDef cur fill:#fff2cd,stroke:#e6a700,color:#8a5a00
+    classDef stock fill:#f2f2f2,stroke:#aaa,color:#555
+    classDef hw fill:#e8f0fe,stroke:#3b78e7,color:#174ea6
+
+    class FW,INIT,FSTAB,BOOTLOG done
+    class SF cur
+    class PRE,LK,KRN,HAL,EGL,RIL stock
+    class SET cur
+    class SOC hw
+```
+
+**读图要点**
+
+| 层 | 谁提供 | 能不能换 |
+|---|---|---|
+| preloader / LK | 原厂 | ❌ 换了会变砖，且 LK 校验 boot.img 头部的 SHA1 `id` |
+| 内核 3.10.65 | 原厂 `Image.gz-dtb` | ❌ 没有源码树，且这颗内核只认原厂那套 ramdisk 结构（实测：换成 omni 的 416 条目 ramdisk 直接引导不了） |
+| ramdisk | **我们**（`phoenix/rootdir/`） | ✅ 但必须用原厂 init，否则 SELinux 无法切 permissive |
+| `/system` | **LineageOS 14.1 编译** | ✅ 这就是移植的主体 |
+| `/system/vendor` | 原厂 blobs | 🔶 能用则用；缺依赖时从原厂固件补（如 `libstlport.so`） |
+
+> 一句话概括移植策略：**下层全部保留原厂，只替换 `/system`**。
+> 所有内核侧的限制都靠 ramdisk 配置和 CI 源码补丁绕开，而不是重编内核。
+
+---
+
 ## 状态
 
 | 阶段 | 内容 | 状态 |
