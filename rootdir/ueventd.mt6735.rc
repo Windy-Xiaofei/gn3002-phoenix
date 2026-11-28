@@ -214,3 +214,18 @@ subsystem adf
 
 /dev/irtx              0660   system     system
 /dev/ir-learning       0660   system     system
+
+# ---- phoenix: 显示栈设备节点权限（2026-11-28 实机验证）----
+# 本机 GPU 节点叫 /dev/mali0（不是 /dev/mali），默认 0600 root:root。
+# surfaceflinger(system) 打不开 -> eglInitialize(EGL_NOT_INITIALIZED)
+# -> "no suitable EGLConfig found" -> abort。
+/dev/mali0                        0666    system   graphics
+/dev/mali                         0666    system   graphics
+# gralloc 需要 ion
+/dev/ion                          0666    system   graphics
+/dev/mtk_ion                      0666    system   graphics
+# MTK HWC DispDevice::DispDevice open("/dev/mtk_disp_mgr") 失败会 abort
+/dev/mtk_disp_mgr                 0666    system   graphics
+/dev/mtk_disp                     0666    system   graphics
+/dev/disp_mgr                     0666    system   graphics
+/dev/graphics/*                   0666    system   graphics
