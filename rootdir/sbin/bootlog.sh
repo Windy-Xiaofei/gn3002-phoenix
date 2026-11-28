@@ -1,45 +1,65 @@
 #!/system/bin/sh
-# /sbin/bootlog.sh — 由 init 的 bootlog 服务启动（class core，oneshot）
+# /sbin/bootlog.sh — 由 init 的 bootlog 服务启动（class core）
 #
-# 本文件装到 ramdisk 的 /sbin/（见 device.mk 的 PRODUCT_COPY_FILES），
-# 由设备 rc 以 `/system/bin/sh /sbin/bootlog.sh` 方式执行，
-# 所以不需要可执行位，但内容必须用 LF 换行。
+# 三层保险，从"一定看得到"到"最完整"：
+#   ① 起步就打一条 /dev/kmsg —— 用来确认本服务到底有没有被启动
+#      （2026-11-28 的教训：/data/gn3002 目录建出来了却始终是空的，
+#        无法区分"服务没起"和"服务起了但写文件失败"）
+#   ② 每轮把 logcat crash 缓冲的**尾部若干行**写进 /dev/kmsg
+#      crash 缓冲里就是 native 崩溃（signal 6 / SIGABRT）的直接原因，
+#      几百字节足够，塞得进 64 KB 内核环形缓冲
+#   ③ 同时尽力把完整日志刷进 /data/gn3002 与 /cache/gn3002
 #
-# 为什么不靠 /proc/last_kmsg：它是内核 ram console 的 64 KB 环形缓冲，
-# 硬断电 / 拔电池就整块丢失。本项目实测连续两次只拿到全 NUL，正文只剩
-# "ram console header, hw_status: 0... header may be corrupted" 这一句头。
-# /cache 是 ext4 持久分区，写进去断电不丢。
-#
-# 第一件事是把「上一轮启动」的内核日志抢救到 /cache —— 那是本次开机之前的
-# 最后一次，正好就是要看的那次。之后才刷本轮日志。
-#
-# 用 cat 而不是 cp：/proc/last_kmsg 的 st_size 是 0，按 size 拷贝只会得到
-# 空文件（init 的 copy 内置命令也有同样的问题）；cat 是流式读，能拿全。
-#
-# 若 /system 没挂上，本脚本根本起不来，init 会在内核日志里留
-# "cannot execute" 之类，并且 /cache/gn3002/ 下不会有 dmesg-*.txt
-# —— 「没有这些文件」本身就是诊断结论。
+# 为什么优先 /data：/cache（p21）挂载在这台机器上不稳定，实测经常一整轮
+# checkpoint 一个文件都不剩；/data（p22，25 GB）必须挂上，否则 framework 起不来。
+# 目录权限设成 0777：这样在 LineageOS 正常跑着的时候，adbd（shell 用户）
+# 也能直接 `adb pull /data/gn3002/` 把日志取出来，不必先关机进 recovery。
 
-DIR=/cache/gn3002
-mkdir -p $DIR
+DIRS="/data/gn3002 /cache/gn3002"
 
-# ① 抢救上一轮内核日志 + 本轮最初的现场
-cat /proc/last_kmsg > $DIR/last_kmsg-prev.txt 2>/dev/null
-cat /proc/cmdline   > $DIR/cmdline.txt 2>/dev/null
-mount               > $DIR/mounts-start.txt 2>/dev/null
+echo "<3>gn3002: bootlog.sh started (pid $$)" > /dev/kmsg
 
-# ② 本轮日志：20 × 5 秒 ≈ 开机后 100 秒，足够走完 framework 启动
+for d in $DIRS; do
+    mkdir -p $d 2>/dev/null
+    chmod 0777 $d 2>/dev/null
+done
+
+# 选一个真正可写的目录
+OUT=""
+for d in $DIRS; do
+    if touch $d/.w 2>/dev/null; then rm -f $d/.w; OUT=$d; break; fi
+done
+[ -z "$OUT" ] && { OUT=/tmp/gn3002; mkdir -p $OUT; }
+echo "<3>gn3002: bootlog OUT=$OUT" > /dev/kmsg
+
+# ① 抢救上一轮内核日志
+cat /proc/last_kmsg > $OUT/last_kmsg-prev.txt 2>/dev/null
+cat /proc/mounts    > $OUT/mounts-start.txt 2>/dev/null
+echo "started OUT=$OUT" > $OUT/state.txt 2>/dev/null
+
+# ② 主循环：24 轮 × 5 秒 ≈ 120 秒
 i=0
-while [ $i -lt 20 ]; do
-    dmesg            > $DIR/dmesg-$i.txt   2>&1
-    logcat -d -b all > $DIR/logcat-$i.txt  2>&1
-    ps -A            > $DIR/ps-$i.txt      2>&1
-    getprop          > $DIR/getprop-$i.txt 2>&1
+while [ $i -lt 24 ]; do
+    dmesg                 > $OUT/dmesg-$i.txt    2>&1
+    logcat -d -b all      > $OUT/logcat-$i.txt   2>&1
+    logcat -d -b crash    > $OUT/crash-$i.txt    2>&1
+    ps -A                 > $OUT/ps-$i.txt       2>&1
+    cat /proc/mounts      > $OUT/mounts-$i.txt   2>&1
+    cat /proc/last_kmsg   > $OUT/lastkmsg-$i.txt 2>&1
+
+    # 把崩溃缓冲的最后几行压成一行写进内核日志（关键：这是唯一必然可见的通道）
+    C=$(logcat -d -b crash 2>/dev/null | tail -n 12 | tr '\n' '|' | tr -s ' ' | cut -c1-1500)
+    [ -n "$C" ] && echo "<3>gn3002 crash[$i]: $C" > /dev/kmsg
+
+    # surfaceflinger / zygote 相关行也挑几行进内核日志
+    S=$(logcat -d -b all 2>/dev/null | grep -iE 'surfaceflinger|zygote|EGL|gralloc|libGLES|FATAL' | tail -n 8 | tr '\n' '|' | cut -c1-1200)
+    [ -n "$S" ] && echo "<3>gn3002 sf[$i]: $S" > /dev/kmsg
+
     i=$((i+1))
     sleep 5
 done
 
-dmesg            > $DIR/dmesg-final.txt  2>&1
-logcat -d -b all > $DIR/logcat-final.txt 2>&1
-ps -A            > $DIR/ps-final.txt     2>&1
-mount            > $DIR/mounts-final.txt 2>&1
+dmesg            > $OUT/dmesg-final.txt  2>&1
+logcat -d -b all > $OUT/logcat-final.txt 2>&1
+echo "<3>gn3002: bootlog.sh finished" > /dev/kmsg
+echo "done" >> $OUT/state.txt 2>/dev/null

@@ -80,12 +80,20 @@ service mtkbt /system/vendor/bin/mtkbt
 #   所以这里失败也不致命。
 # ------------------------------------------------------------------------------
 on early-fs
-    write /dev/kmsg "gn3002: early-fs entered"
+    write /dev/kmsg "<3>gn3002: A early-fs entered"
     mount ext4 /dev/block/mmcblk0p21 /cache wait
-    write /dev/kmsg "gn3002: mount /cache attempted"
+    write /dev/kmsg "<3>gn3002: B mount /cache returned"
     mkdir /cache/gn3002 0770 root root
-    write /cache/gn3002/r0-early-fs-cache-mounted.txt ok
-    write /dev/kmsg "gn3002: checkpoint r0 written"
+    write /dev/kmsg "<3>gn3002: C mkdir /cache/gn3002 returned"
+    write /data/gn3002/r0-early-fs-cache-mounted.txt ok
+    write /dev/kmsg "<3>gn3002: D write r0 returned"
+    # /data 也先试一次：/cache 挂载在这台机器上不稳定，而 /data 必须挂上
+    # （framework 起不来就是它没挂）。bootlog.sh 会优先往 /data 写。
+    mount ext4 /dev/block/mmcblk0p22 /data wait
+    write /dev/kmsg "<3>gn3002: E mount /data returned"
+    mkdir /data/gn3002 0770 root root
+    write /data/gn3002/r0-early-fs-data-mounted.txt ok
+    write /dev/kmsg "<3>gn3002: F write /data r0 returned"
 
 # ------------------------------------------------------------------------------
 # fs（独占）：真正的挂载（7.1 的挂载入口，必须写在设备 rc 里）
@@ -105,10 +113,10 @@ on early-fs
 # （fstab 里两个分区都带 nofail，就是为了让 error_count 保持 0，见 B15。）
 # ------------------------------------------------------------------------------
 on fs
-    write /dev/kmsg "gn3002: fs entered, calling mount_all"
+    write /dev/kmsg "<3>gn3002: fs entered, calling mount_all"
     mount_all /fstab.mt6735
-    write /dev/kmsg "gn3002: mount_all returned ok"
-    write /cache/gn3002/r1-fs-mount-all-returned.txt ok
+    write /dev/kmsg "<3>gn3002: mount_all returned ok"
+    write /data/gn3002/r1-fs-mount-all-returned.txt ok
 
 # ------------------------------------------------------------------------------
 # late-fs（独占）：兜底再挂一次 /system
@@ -118,10 +126,10 @@ on fs
 # late-fs 在 post-fs 之后触发，此时 logd 已起、/system 属性即将/已经加载。
 # ------------------------------------------------------------------------------
 on late-fs
-    write /dev/kmsg "gn3002: late-fs entered"
+    write /dev/kmsg "<3>gn3002: late-fs entered"
     mount ext4 /dev/block/mmcblk0p20 /system ro wait
-    write /dev/kmsg "gn3002: late-fs system mount attempted"
-    write /cache/gn3002/r3-late-fs-system-mounted.txt ok
+    write /dev/kmsg "<3>gn3002: late-fs system mount attempted"
+    write /data/gn3002/r3-late-fs-system-mounted.txt ok
 
 # ------------------------------------------------------------------------------
 # early-boot（独占）：/data 目录 + 设备节点权限
@@ -141,53 +149,47 @@ on early-boot
     mkdir /data/nvram/APCFG 0771 root root
     mkdir /data/misc/wifi 0770 wifi wifi
     mkdir /data/misc/bluetooth 0770 bluetooth bluetooth
-    write /cache/gn3002/r5-early-boot-dirs.txt ok
+    write /data/gn3002/r5-early-boot-dirs.txt ok
     chown system system /proc/mtk_battery_cmd
     chmod 0660 /proc/mtk_battery_cmd
     # 7.1 的外部存储走 FUSE（内核没有 sdcardfs），把 fuse 设备放开
     chmod 0666 /dev/fuse
 
 # ------------------------------------------------------------------------------
-# 共享段：只放 write checkpoint（写 /cache 基本不会失败）
+# ★★ 共享 trigger 里一条命令都不要写（2026-11-28 血的教训）★★
 #
-# 这里必须克制：本文件在 init.rc 第 9 行就被 import，同名 trigger 的命令排在
-# AOSP 命令前面，而我们这几条一旦失败，AOSP 的同段命令（start logd /
-# start vold / class_start core / class_start main）会被一起跳过。
-# tools/check_init_rc.py 之外，CI 里也有一条校验专门盯这件事。
+# 曾经在 on boot 里写了一句 `write /data/gn3002/r6-boot.txt ok` 当作阶段标记。
+# 而 /cache 的挂载在这台机器上并不稳定：那一句失败后，init 按"动作内失败即中止"
+# 的规则**跳过了 AOSP 后面的 `class_start core`** —— 于是 logd / adbd / bootlog
+# 全都没起来：没有 logcat、没有 adb shell、bootlog 一个文件也没写。
+# 表面上只表现为"bootlog 没输出"，极难联想到是被自己的一句 write 拖死的。
+#
+# 结论：post-fs / post-fs-data / boot / nonencrypted 这些**与 AOSP 共享**的段，
+# 本文件一条命令都不放。阶段标记只写在：
+#   - 独占段（early-fs / fs / late-fs / early-boot）
+#   - 独有的 property 触发（on property:init.svc.zygote=running）
+# 并且在独占段内，标记用 `write /dev/kmsg`（已验证可用）而不是写文件。
 # ------------------------------------------------------------------------------
-on post-fs
-    write /cache/gn3002/r2-post-fs.txt ok
-
-on post-fs-data
-    write /cache/gn3002/r4-post-fs-data.txt ok
-
-on boot
-    write /cache/gn3002/r6-boot.txt ok
-
-on nonencrypted
-    # 只有 mount_all 正常返回才会触发这里，class_start main 就在本动作里
-    # （AOSP init.rc 的 on nonencrypted 段）。文件出现 = /system 与 /data 都挂上了。
-    # 注意 AOSP 该段第一条是 update_verifier，而本镜像的 /system/bin 里没有它
-    # （已核对 system.img），所以会看到 "cannot find ... disabling exec 2"。
-    # 那条日志无害，但它是"nonencrypted 确实被触发"的证据。
-    write /dev/kmsg "gn3002: nonencrypted triggered, zygote starting"
-    write /cache/gn3002/r7-nonencrypted.txt ok
-
+# ★ 这里原本是 `on nonencrypted`（与 AOSP 共享，AOSP 在其中做 class_start main）。
+#   为了绝不给共享动作注入任何可能失败的命令，改成监听 zygote 属性 ——
+#   zygote 在 main 类里、由 AOSP 的 class_start main 启动，所以
+#   "init.svc.zygote=running" 出现，等价于 main 类已经起来了。
 on property:init.svc.zygote=running
-    write /dev/kmsg "gn3002: zygote running"
-    write /cache/gn3002/r8-zygote-running.txt ok
+    write /dev/kmsg "<3>gn3002: zygote running (main class started)"
 
 # ------------------------------------------------------------------------------
-# 日志落盘（★ 本项目最重要的调试设施）
+# 日志落盘（★ 本项目最重要的调试设施，也是唯一能拿到 logcat 的途径）
 #
-# last_kmsg 靠内核 ram console（64 KB 环形缓冲），硬断电就整块丢；
-# 本项目已连续两次只拿到全 NUL（正文只剩 "header may be corrupted"）。
-# 所以改从 /cache 取日志：只要 /system 挂上了，本服务每 5 秒把
-# dmesg / logcat / ps / getprop 刷进 /cache/gn3002/，覆盖开机后约 100 秒。
+# last_kmsg 是内核 ram console 的 64 KB 环形缓冲，日志量大时 60 秒就绕回、
+# 硬断电更是整块丢失。所以由本服务定期把 dmesg / logcat / logcat -b crash
+# 刷到持久分区。
 #
-# 若 /system 没挂上，init 找不到 /system/bin/sh，会在内核日志里留
-# "cannot execute"，且 /cache/gn3002/ 下不会有 dmesg-*.txt
-# —— 「没有这些文件」本身就是诊断结论。
+# 为什么优先写 /data：/cache（p21）在这台机器上的挂载不稳定（fs_mgr 报 EBUSY），
+# 实测 /cache/gn3002 经常一个文件都没有；而 /data（p22，25 GB）必须挂上，
+# 否则 framework 根本起不来。所以 /data 是更可靠的落点。
+#
+# 若本服务没跑起来，现象是 /data/gn3002 目录存在但为空 ——
+# 这时要怀疑 class_start core 被跳过（见上面"共享 trigger"那段注释）。
 # ------------------------------------------------------------------------------
 service bootlog /system/bin/sh /sbin/bootlog.sh
     class core
