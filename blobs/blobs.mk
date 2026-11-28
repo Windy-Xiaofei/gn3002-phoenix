@@ -251,3 +251,12 @@ PRODUCT_COPY_FILES += \
     $(LOCAL_BLOBS)/lib64/libgui_ext.so:$(TARGET_COPY_OUT_VENDOR)/lib64/libgui_ext.so \
     $(LOCAL_BLOBS)/lib64/libui_ext.so:$(TARGET_COPY_OUT_VENDOR)/lib64/libui_ext.so \
     $(LOCAL_BLOBS)/lib64/libperfservicenative.so:$(TARGET_COPY_OUT_VENDOR)/lib64/libperfservicenative.so
+
+# ---- libstlport.so（Mali 驱动的旧 STL 依赖，2026-11-28 实机堆栈定位）----
+# 崩溃点：eglGetDisplay() -> libEGL.so -> SurfaceFlinger::init()，signal 6。
+# libGLES_mali.so 的 DT_NEEDED 里有 libstlport.so —— 原厂 5.1 时代的 STL，
+# AOSP 7.1 已改用 libc++，系统里没有；缺它 dlopen 失败，eglGetDisplay 返回
+# NULL，surfaceflinger 直接 abort。原厂镜像里两份都在，直接搬过来。
+PRODUCT_COPY_FILES += \
+    $(LOCAL_BLOBS)/lib/libstlport.so:$(TARGET_COPY_OUT_VENDOR)/lib/libstlport.so \
+    $(LOCAL_BLOBS)/lib64/libstlport.so:$(TARGET_COPY_OUT_VENDOR)/lib64/libstlport.so

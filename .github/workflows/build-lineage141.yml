@@ -175,7 +175,7 @@ jobs:
           # 校验：显示栈依赖库必须齐（缺了 surfaceflinger 会 SIGABRT）
           echo "--- 校验显示栈依赖库 ---"
           for l in libion.so libbwc.so libgui_ext.so libui_ext.so \
-                   libperfservicenative.so; do
+                   libperfservicenative.so libstlport.so; do
             for d in lib lib64; do
               p="rom/device/gionee/gbl7356/blobs/$d/$l"
               if [ -f "$p" ]; then
