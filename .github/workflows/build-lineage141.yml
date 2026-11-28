@@ -173,9 +173,11 @@ jobs:
           fi
 
           # 校验：显示栈依赖库必须齐（缺了 surfaceflinger 会 SIGABRT）
+          # libpq_prot.so 是递归展开依赖链才发现的第三层：
+          #   surfaceflinger -> libGLES_mali.so -> libdpframework.so -> libpq_prot.so
           echo "--- 校验显示栈依赖库 ---"
           for l in libion.so libbwc.so libgui_ext.so libui_ext.so \
-                   libperfservicenative.so libstlport.so; do
+                   libperfservicenative.so libstlport.so libpq_prot.so; do
             for d in lib lib64; do
               p="rom/device/gionee/gbl7356/blobs/$d/$l"
               if [ -f "$p" ]; then

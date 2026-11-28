@@ -260,3 +260,14 @@ PRODUCT_COPY_FILES += \
 PRODUCT_COPY_FILES += \
     $(LOCAL_BLOBS)/lib/libstlport.so:$(TARGET_COPY_OUT_VENDOR)/lib/libstlport.so \
     $(LOCAL_BLOBS)/lib64/libstlport.so:$(TARGET_COPY_OUT_VENDOR)/lib64/libstlport.so
+
+# ---- libpq_prot.so（dpframework 的第三层依赖；2026-11-28 递归排查定位）----
+# 崩溃链：surfaceflinger -> libGLES_mali.so -> libdpframework.so -> libpq_prot.so
+# libdpframework.so 的 DT_NEEDED 里有 libpq_prot.so，
+# 原厂把它放在 /system/lib{,64}（不在 vendor 下），所以前几轮清单都漏了它。
+# 缺它 -> dpframework 加载失败 -> libGLES_mali 加载失败 ->
+#        eglGetDisplay() 返回 NULL -> libEGL 报
+#        "couldn't find an OpenGL ES implementation" -> signal 6。
+PRODUCT_COPY_FILES += \
+    $(LOCAL_BLOBS)/lib/libpq_prot.so:$(TARGET_COPY_OUT_VENDOR)/lib/libpq_prot.so \
+    $(LOCAL_BLOBS)/lib64/libpq_prot.so:$(TARGET_COPY_OUT_VENDOR)/lib64/libpq_prot.so
