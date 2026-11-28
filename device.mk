@@ -1,5 +1,5 @@
 #
-# LineageOS 15.1 device configuration — Gionee GN3002 (gbl7356)
+# LineageOS 14.1 device configuration — Gionee GN3002 (gbl7356)
 #
 # 硬件底座：MT6735 / 3.10.65 内核 / 5.0" 720x1280 / 64 位用户空间
 #

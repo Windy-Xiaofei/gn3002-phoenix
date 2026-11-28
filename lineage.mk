@@ -1,5 +1,5 @@
 #
-# LineageOS 15.1 product configuration — Gionee GN3002 (gbl7356)
+# LineageOS 14.1 product configuration — Gionee GN3002 (gbl7356)
 #
 # 文件名必须叫 lineage.mk：8.1 的 build/core/product_config.mk 里，
 # 只要 lunch 的产品名以 lineage_ 开头（envsetup.sh 会把 LINEAGE_BUILD
