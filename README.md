@@ -283,6 +283,14 @@ TWRP → 安装 → **安装镜像** → 选 `system.img` → 目标 **System Im
 再选 `boot.img` → 目标 **Boot**。最后 **格式化 Data**（不是「清除 Data」，
 后者是文件级删除，5.1 的加密分区挂不上就必然失败）。
 
+> ⚠️ **必须格式化 Data，不能只覆盖 system.img**（2026-11-28 实测）：
+> 保留旧 `/data` 直接刷新 system 会「进到桌面就黑屏关机」。原因有两层：
+> - `/data/property` 里持久化的旧属性（`persist.*`）会覆盖新 default.prop；
+> - 旧 App 的数据库版本与新 system 里的 App 不匹配，
+>   例如 `com.android.email` 从 v140 库配 v131 App，崩溃循环拖垮桌面。
+> 只有格式化 Data 才能让新系统从干净状态冷启动。代价是手机里的数据全清 —
+> 重要资料（IMEI/NVRAM 在独立分区，不受影响）之外的用户数据请先备份。
+
 ### 一个历史坑：原厂恢复自恢复
 
 原厂 `init.rc` 里有 `service flash_recovery /system/bin/install-recovery.sh`，
