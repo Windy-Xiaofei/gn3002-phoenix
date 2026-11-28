@@ -146,7 +146,7 @@ jobs:
           mkdir -p rom/device/gionee/gbl7356
           rsync -a --exclude='.git' dt/ rom/device/gionee/gbl7356/
 
-          # main 上的 ramdisk 关键文件覆盖过来（见上面 "Checkout authoritative
+          # main 上的关键文件覆盖过来（见上面 "Checkout authoritative
           # ramdisk files" 的说明）。CM-14.1 分支上这些文件可能是旧版。
           echo "--- 用 main 覆盖 ramdisk 关键文件 ---"
           for f in rootdir/init.mt6735.rc rootdir/fstab.mt6735 \
@@ -158,6 +158,33 @@ jobs:
             else
               echo "  警告: dtmain/$f 不存在，沿用 cm-14.1 的版本"
             fi
+          done
+
+          # blobs/ 也要用 main 的：设备树本体从 cm-14.1 检出，但新增的闭源库
+          # （以及 blobs.mk 里的拷贝规则）只在 main 上。
+          # 2026-11-28 踩过：补了 5 个显示栈依赖库并提交到 main，CI 却仍用
+          # cm-14.1 的 blobs（86 MB），产物里一个都没进去，白跑一轮 30 分钟。
+          echo "--- 用 main 覆盖 blobs 与 blobs.mk ---"
+          if [ -d dtmain/blobs ]; then
+            rsync -a --delete dtmain/blobs/ rom/device/gionee/gbl7356/blobs/
+            echo "  已覆盖 blobs/（$(du -sh rom/device/gionee/gbl7356/blobs | cut -f1)）"
+          else
+            echo "  警告: dtmain/blobs 不存在，沿用 cm-14.1 的 blobs"
+          fi
+
+          # 校验：显示栈依赖库必须齐（缺了 surfaceflinger 会 SIGABRT）
+          echo "--- 校验显示栈依赖库 ---"
+          for l in libion.so libbwc.so libgui_ext.so libui_ext.so \
+                   libperfservicenative.so; do
+            for d in lib lib64; do
+              p="rom/device/gionee/gbl7356/blobs/$d/$l"
+              if [ -f "$p" ]; then
+                echo "  OK   $d/$l"
+              else
+                echo "::error::缺少 blobs/$d/$l（显示栈依赖，surfaceflinger 会崩）"
+                exit 1
+              fi
+            done
           done
 
           echo "--- device tree ---"
