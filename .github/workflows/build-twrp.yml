@@ -282,7 +282,74 @@ jobs:
           done
           echo "=== 编译期宏是否生效 ==="
           grep -m1 'TW_DEFAULT_LANGUAGE' rom/out/target/product/gbl7356/obj/ETC/*/intermediates/* 2>/dev/null || true
-          echo "OK: 全部验证通过"
+          echo "OK: i18n/temp 验证通过"
+
+      # adb shell / 终端可用 + /data 可读的源码级修复是否真的进了 ramdisk。
+      # 逐项查：/system/bin/sh 必须存在且 0755、file_contexts 有 shell_exec
+      # 规则、init.rc 有 restorecon、/sbin 目录 0755。少一项 adb shell 就废。
+      - name: Verify adb shell and data fix inside ramdisk
+        if: always()
+        run: |
+          set -uo pipefail
+          D=rom/out/target/product/gbl7356
+          RD="$D/ramdisk-recovery.img"
+          if [ ! -f "$RD" ]; then
+            echo "::error::ramdisk-recovery.img 不存在，无法验证"
+            exit 1
+          fi
+          tmp=$(mktemp -d)
+          gzip -dc "$RD" > "$tmp/rd.cpio" 2>/dev/null || cp "$RD" "$tmp/rd.cpio"
+          python3 - "$tmp/rd.cpio" <<'PYEOF'
+          import sys
+          raw = open(sys.argv[1], 'rb').read()
+          entries = {}
+          i = 0
+          while True:
+              j = raw.find(b'070701', i)
+              if j < 0:
+                  break
+              h = raw[j:j+110]
+              try:
+                  mode = int(h[14:22], 16)
+                  namesize = int(h[94:102], 16)
+                  filesize = int(h[54:62], 16)
+              except ValueError:
+                  break
+              name = raw[j+110:j+110+namesize-1].decode('utf-8', 'replace')
+              data = raw[j+110+namesize:j+110+namesize+filesize]
+              entries[name] = (mode, data)
+              i = j + 110 + namesize
+              i = (i + 3) & ~3
+              i += filesize
+              i = (i + 3) & ~3
+              if name == 'TRAILER!!!':
+                  break
+          def mode_of(name):
+              return entries.get(name, (0, b''))[0] & 0o777
+          def text_of(name):
+              return entries.get(name, (0, b''))[1].decode('utf-8', 'replace')
+          bad = []
+          checks = [
+              ('/system/bin/sh 存在', 'system/bin/sh' in entries),
+              ('/system/bin/sh 0755', mode_of('system/bin/sh') == 0o755),
+              ('/sbin 目录 0755', mode_of('sbin') == 0o755),
+              ('file_contexts 有 shell_exec 规则',
+               'shell_exec' in text_of('file_contexts')),
+              ('init.rc 有 restorecon',
+               'restorecon' in text_of('init.rc')),
+              ('init.rc 有 adb-data 标记',
+               'phoenix-adbdata' in text_of('init.rc')),
+          ]
+          for label, ok in checks:
+              print(('  OK   ' if ok else '  MISS ') + label)
+              if not ok:
+                  bad.append(label)
+          if bad:
+              print('::error::adb/data 修复未进 ramdisk: %s' % ', '.join(bad))
+              sys.exit(1)
+          print('OK: adb shell / data 修复齐全')
+          PYEOF
+          rm -rf "$tmp"
 
       - name: Collect artifacts
         run: |

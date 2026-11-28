@@ -274,6 +274,32 @@ PYEOF
 patch_recovery_ramdisk
 
 # ---------------------------------------------------------------------------
+# 4b. adb shell / 终端可用 + /data 可读（2026-11-28 实测根因）
+# ---------------------------------------------------------------------------
+# 两个问题同源：adbd 只能 exec shell_exec 标签的 shell，而 ramdisk 的 /sbin/*
+# 全是 rootfs 标签，且 /sbin 目录 0750。原生 adbd 默认指向 /system/bin/sh，
+# 但我们的 ramdisk 里没有这个文件 → adb shell 必然失败；adbd 降权后也读不到
+# /data。历史上修过多次但都是产物级 patch（fix1/fix2/fix3），从未进 CI，
+# 所以每次构建出来又坏了。这里在源码级固化，让 CI 产物自带修复。
+# 实现在 postinstall-adb-data.py（POST_INSTALL 阶段改 TARGET_RECOVERY_ROOT_OUT，
+# 不重打包 ramdisk —— MTK 3.10 内核拒绝 cpio 重打包）。
+patch_adb_data() {
+    local s="$DT_DIR/tools/patch-twrp-adb-data.py"
+    if [ ! -f "$s" ]; then
+        echo "  [adb-data] 错误: 找不到 $s" >&2
+        exit 1
+    fi
+    if python3 "$s" "$(pwd)" "$DT_DIR"; then
+        patched=$((patched + 1))
+    else
+        echo "  [adb-data] 失败" >&2
+        failed=$((failed + 1))
+    fi
+}
+
+patch_adb_data
+
+# ---------------------------------------------------------------------------
 # 5. TWRP 主题 i18n：让中文可选、且切换后真的记得住
 # ---------------------------------------------------------------------------
 # 三个独立问题叠在一起：
