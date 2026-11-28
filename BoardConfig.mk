@@ -163,7 +163,14 @@ TW_BRIGHTNESS_PATH := /sys/class/leds/lcd-backlight/brightness
 TW_MAX_BRIGHTNESS := 255
 TW_DEFAULT_BRIGHTNESS := 140
 TW_CUSTOM_BATTERY_PATH := /sys/class/power_supply/battery
-TW_CUSTOM_CPU_TEMP_PATH := /sys/class/thermal/thermal_zone1/temp
+# 只是兜底：正常情况下 tw_cpu_temp 由 tools/patch-twrp-temp-battery.py 改成
+# 按 thermal_zoneN/type 自动识别（见该脚本注释），这个宏只在自动识别扑空时生效。
+# 2026-11-28 在 recovery 里实测这台机器的 thermal zone 布局：
+#   zone0 mtktswmt   zone1 mtktspmic  zone2 mtkts1    zone3 mtkts2
+#   zone4 mtkts3     zone5 mtktspa    zone6 mtktsbattery  zone7 mtktscpu
+# 原来写死 zone1 是 PMIC 温度（实测 29.3°C），却标成 "CPU"，这就是"温度不准"。
+# 真正的 CPU 传感器是 zone7（mtktscpu）。
+TW_CUSTOM_CPU_TEMP_PATH := /sys/class/thermal/thermal_zone7/temp
 
 # 触摸是汇顶 FT8606，走 input 子系统的 vm 设备，不需要在 TWRP 里屏蔽。
 # 原厂 persist.sys.usb.config 是 mass_storage，recovery 里默认用 adb 更方便调试。

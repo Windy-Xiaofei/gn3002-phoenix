@@ -297,12 +297,20 @@ TWRP → 安装 → **安装镜像** → 选 `system.img` → 目标 **System Im
 
 | 问题 | 状态 |
 |---|---|
-| surfaceflinger 反复 SIGABRT | **当前卡点**。堆栈指向 `eglGetDisplay()`；已补 `libstlport.so` 等 6 个厂商依赖库，待验证 |
+| surfaceflinger 反复 SIGABRT | **当前卡点**。递归展开依赖链后定位到第三层 `libdpframework.so → libpq_prot.so` 缺失，已补，待验证 |
 | TWRP 里 `adb shell` / 终端不可用 | 已知。SELinux 不允许 adbd 执行 `rootfs` 标签的 `/sbin/sh`，原厂 init 又无法切 permissive |
 | TWRP 下 `/data` 读不到 | 已知。TWRP 用 `resuid=10010` 挂载，adbd(uid 2000) 读到 0 字节 |
-| 电池 / 温度读数不准 | 未解决，低优先级 |
+| `hwcomposer.mt6735.so` 符号对不上 | 已知。`GraphicBufferMapper::lock` 是 5.1 旧签名，`__xlog_buf_printf` 是 MTK 私有导出。HWC 走 dlopen，有软件合成兜底 |
 | `sdcardfs` / `memfd_create` 缺失 | 未验证，可能要动内核 |
 | camera1 → camera3、RIL v6 → v11 | 未开始 |
+
+已解决：
+
+| 问题 | 做法 |
+|---|---|
+| TWRP CPU 温度不准 | 原来写死 `thermal_zone1`，那是 PMIC 传感器。实测本机 `thermal_zone7 = mtktscpu` 才是 CPU，改为按 `thermal_zoneN/type` 自动识别 |
+| TWRP 中英文无法切换 | `ui.xml` 里硬编码 `tw_language` 会覆盖持久设置；改为编译期默认值 + 用户选择写 `/data/recovery/.twrps` |
+| TWRP 电量读数 | `capacity` 读失败时按千分比归一，再兜底 `charge_counter/charge_full` |
 
 ---
 
